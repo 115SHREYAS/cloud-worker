@@ -1,0 +1,20 @@
+{
+  "name": "@cloud-worker/server",
+  "version": "0.0.1",
+  "private": true,
+  "module": "index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch index.ts",
+    "start": "bun run index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@cloud-worker/shared": "workspace:*"
+  }
+}

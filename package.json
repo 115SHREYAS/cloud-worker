@@ -1,0 +1,15 @@
+{
+      "name": "cloud-worker-root",
+      "private": true,
+      "packageManager": "pnpm@11.22.0",
+      "scripts": {
+        "build": "turbo run build",
+        "dev": "turbo run dev",
+        "lint": "turbo run lint",
+        "typecheck": "turbo run typecheck"
+      },
+      "devDependencies": {
+        "turbo": "^2.4.4",
+        "typescript": "^5.8.2"
+      }
+    }

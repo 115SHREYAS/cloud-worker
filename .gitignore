@@ -1,0 +1,14 @@
+node_modules 
+.pnpm-store
+dist
+build
+.next
+.turbo
+
+.env
+.env.local
+*.pem
+.DS_Store
+Thumbs.db
+design-files
+
