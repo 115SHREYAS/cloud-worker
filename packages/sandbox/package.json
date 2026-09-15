@@ -5,7 +5,21 @@
     "type": "module",
     "main": "./src/index.ts",
     "types": "./src/index.ts",
+    "exports": {
+        ".": {
+            "types": "./src/index.ts",
+            "default": "./src/index.ts"
+        }
+    },
     "scripts": {
-        "typecheck": "tsc --noEmit"
+        "typecheck": "tsc --noEmit",
+        "test:sandbox": "bun run src/test-sandbox.ts"
+    },
+    "dependencies": {
+        "@cloud-worker/shared": "workspace:*",
+        "e2b": "^2.46.1"
+    },
+    "devDependencies": {
+        "@types/bun": "^1.4.1"
     }
 }
