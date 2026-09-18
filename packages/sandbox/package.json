@@ -13,7 +13,8 @@
     },
     "scripts": {
         "typecheck": "tsc --noEmit",
-        "test:sandbox": "bun run src/test-sandbox.ts"
+        "test:sandbox": "bun run src/test-sandbox.ts",
+        "test:codex": "bun run src/test-codex-session.ts"
     },
     "dependencies": {
         "@cloud-worker/shared": "workspace:*",
