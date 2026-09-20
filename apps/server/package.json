@@ -7,15 +7,24 @@
   "scripts": {
     "dev": "bun --watch index.ts",
     "start": "bun run index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:push": "drizzle-kit push"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/ioredis": "^5.0.0",
+    "drizzle-kit": "^0.31.10"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "@cloud-worker/shared": "workspace:*"
+    "@cloud-worker/sandbox": "workspace:*",
+    "@cloud-worker/shared": "workspace:*",
+    "bullmq": "^6.3.8",
+    "drizzle-orm": "^0.45.2",
+    "ioredis": "^6.0.0",
+    "postgres": "^3.4.9"
   }
 }
