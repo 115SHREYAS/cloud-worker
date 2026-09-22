@@ -2,7 +2,7 @@ import type { StreamEvent, Task, TaskStatus, CreateTaskInput, GitHubInstallation
 import type { AgentProvider } from "@cloud-worker/sandbox";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { eq, desc, asc } from "drizzle-orm";
+import { eq, desc, asc, inArray } from "drizzle-orm";
 import {
   tasks,
   taskLogs,
@@ -20,6 +20,7 @@ export interface TaskRepository {
   createTask(id: string, input: CreateTaskInput, workingBranch: string): Promise<TaskRecord>;
   getTask(id: string): Promise<TaskRecord | null>;
   listTasks(limit?: number): Promise<TaskRecord[]>;
+  listActiveTasks(limit?: number): Promise<TaskRecord[]>;
   updateTask(id: string, updates: Partial<TaskRecord>): Promise<TaskRecord>;
   saveLog(taskId: string, event: StreamEvent): Promise<void>;
   getLogs(taskId: string): Promise<StreamEvent[]>;
@@ -127,11 +128,23 @@ export class DrizzleTaskRepository implements TaskRepository {
     return rows.map(mapRowToTask);
   }
 
+  async listActiveTasks(limit = 100): Promise<TaskRecord[]> {
+    const activeStatuses = ["pending", "provisioning", "cloning", "running"];
+    const rows = await this.db
+      .select()
+      .from(tasks)
+      .where(inArray(tasks.status, activeStatuses))
+      .orderBy(asc(tasks.createdAt))
+      .limit(limit);
+    return rows.map(mapRowToTask);
+  }
+
   async updateTask(id: string, updates: Partial<TaskRecord>): Promise<TaskRecord> {
     const values: Record<string, unknown> = {
-      updatedAt: new Date(),
+      updatedAt: updates.updatedAt ? new Date(updates.updatedAt) : new Date(),
     };
 
+    if (updates.createdAt !== undefined) values.createdAt = new Date(updates.createdAt);
     if (updates.status !== undefined) values.status = updates.status;
     if (updates.sandboxId !== undefined) values.sandboxId = updates.sandboxId;
     if (updates.pullRequestUrl !== undefined) values.pullRequestUrl = updates.pullRequestUrl;
@@ -305,6 +318,13 @@ export class MemoryTaskRepository implements TaskRepository {
     return list.slice(0, limit);
   }
 
+  async listActiveTasks(limit = 100): Promise<TaskRecord[]> {
+    const activeStatuses = new Set(["pending", "provisioning", "cloning", "running"]);
+    const list = Array.from(this.tasks.values()).filter((t) => activeStatuses.has(t.status));
+    list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    return list.slice(0, limit);
+  }
+
   async updateTask(id: string, updates: Partial<TaskRecord>): Promise<TaskRecord> {
     const existing = this.tasks.get(id);
     if (!existing) {
@@ -313,7 +333,7 @@ export class MemoryTaskRepository implements TaskRepository {
     const updated: TaskRecord = {
       ...existing,
       ...updates,
-      updatedAt: new Date().toISOString(),
+      updatedAt: updates.updatedAt ?? new Date().toISOString(),
     };
     this.tasks.set(id, updated);
     return updated;

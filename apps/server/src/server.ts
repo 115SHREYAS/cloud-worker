@@ -8,6 +8,8 @@ import type { EventBus } from "./events/event-bus.ts";
 import type { TaskQueue } from "./queue/task-queue.ts";
 import type { GitHubTokenManager } from "./github/token-manager.ts";
 import { handleGitHubWebhook } from "./github/webhooks.ts";
+import { verify } from "@octokit/webhooks-methods";
+import { RateLimiter } from "./security/rate-limiter.ts";
 
 export interface ServerOptions {
   port?: number;
@@ -15,7 +17,10 @@ export interface ServerOptions {
   eventBus: EventBus;
   queue: TaskQueue;
   tokenManager?: GitHubTokenManager;
+  taskLimiter?: RateLimiter;
+  webhookLimiter?: RateLimiter;
 }
+
 
 
 const CORS_HEADERS: Record<string, string> = {
@@ -26,6 +31,9 @@ const CORS_HEADERS: Record<string, string> = {
 
 export function createServer(options: ServerOptions) {
   const { port = 3001, repo, eventBus, queue, tokenManager } = options;
+  const taskLimiter = options.taskLimiter ?? new RateLimiter({ windowMs: 60_000, maxRequests: 20 });
+  const webhookLimiter = options.webhookLimiter ?? new RateLimiter({ windowMs: 60_000, maxRequests: 60 });
+
 
 
   const server = Bun.serve({
@@ -68,6 +76,21 @@ export function createServer(options: ServerOptions) {
 
         // Create task
         if (path === "/api/tasks" && method === "POST") {
+          const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
+          const limitCheck = taskLimiter.check(clientIp);
+          if (!limitCheck.allowed) {
+            return Response.json(
+              { error: "Too many task creation requests. Please try again later." },
+              {
+                status: 429,
+                headers: {
+                  ...CORS_HEADERS,
+                  "Retry-After": String(Math.ceil(Math.max(0, limitCheck.resetAtMs - Date.now()) / 1000)),
+                },
+              },
+            );
+          }
+
           let body: unknown;
           try {
             body = await req.json();
@@ -76,6 +99,7 @@ export function createServer(options: ServerOptions) {
           }
 
           const parsed = CreateTaskInputSchema.safeParse(body);
+
           if (!parsed.success) {
             return Response.json(
               { error: "Validation failed", details: parsed.error.format() },
@@ -309,6 +333,38 @@ export function createServer(options: ServerOptions) {
           const event = req.headers.get("x-github-event") || "unknown";
           const signature = req.headers.get("x-hub-signature-256") || undefined;
           const secret = process.env.GITHUB_WEBHOOK_SECRET;
+
+          // If secret is set, verify HMAC before consuming rate limit bucket
+          if (secret) {
+            if (!signature) {
+              return Response.json(
+                { error: "Missing x-hub-signature-256 header" },
+                { status: 401, headers: CORS_HEADERS },
+              );
+            }
+            const isValid = await verify(secret, rawBody, signature);
+            if (!isValid) {
+              return Response.json(
+                { error: "Invalid x-hub-signature-256 signature" },
+                { status: 401, headers: CORS_HEADERS },
+              );
+            }
+          }
+
+          const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "github";
+          const limitCheck = webhookLimiter.check(clientIp);
+          if (!limitCheck.allowed) {
+            return Response.json(
+              { error: "Too many webhook requests. Please try again later." },
+              {
+                status: 429,
+                headers: {
+                  ...CORS_HEADERS,
+                  "Retry-After": String(Math.ceil(Math.max(0, limitCheck.resetAtMs - Date.now()) / 1000)),
+                },
+              },
+            );
+          }
 
           try {
             const result = await handleGitHubWebhook({

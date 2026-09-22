@@ -1,18 +1,63 @@
 import type { TaskRepository, TaskRecord } from "../db/repository.ts";
 import type { EventBus } from "../events/event-bus.ts";
-import type { StreamEvent, TaskStatus } from "@cloud-worker/shared";
+import type { StreamEvent, TaskStatus, TokenUsage } from "@cloud-worker/shared";
 import { SandboxManager, AgentSession, initWorkspace, type AgentProvider } from "@cloud-worker/sandbox";
 import type { GitHubTokenManager } from "../github/token-manager.ts";
 import { createPullRequest, formatPullRequestBody } from "../github/pull-request.ts";
 
+function estimateTokenUsage(stdout: string, stderr: string, prompt: string): TokenUsage {
+  const combined = `${stdout}\n${stderr}`;
+  const inputMatches = [...combined.matchAll(/(?:input|prompt)\s*tokens?[:\s]+(\d[\d,]*)/gi)];
+  const outputMatches = [...combined.matchAll(/(?:output|completion)\s*tokens?[:\s]+(\d[\d,]*)/gi)];
+
+  if (inputMatches.length > 0 && outputMatches.length > 0) {
+    const lastInput = inputMatches[inputMatches.length - 1];
+    const lastOutput = outputMatches[outputMatches.length - 1];
+    if (lastInput && lastOutput && lastInput[1] && lastOutput[1]) {
+      const input = parseInt(lastInput[1].replace(/,/g, ""), 10);
+      const output = parseInt(lastOutput[1].replace(/,/g, ""), 10);
+      const total = input + output;
+      const cost = (input * 3 + output * 15) / 1_000_000;
+      return {
+        inputTokens: input,
+        outputTokens: output,
+        totalTokens: total,
+        estimatedCostUsd: Math.round(cost * 10000) / 10000,
+      };
+    }
+  }
+
+  // Fallback heuristic: 1 token ≈ 4 characters
+  const promptTokens = Math.ceil(prompt.length / 4);
+  const completionTokens = Math.ceil(stdout.length / 4);
+  const totalTokens = promptTokens + completionTokens;
+  const estimatedCostUsd = Math.round(((promptTokens * 3 + completionTokens * 15) / 1_000_000) * 10000) / 10000;
+
+  return {
+    inputTokens: promptTokens,
+    outputTokens: completionTokens,
+    totalTokens,
+    estimatedCostUsd,
+  };
+}
+
 export class TaskWorker {
   private readonly activeControllers = new Map<string, AbortController>();
+  private readonly activeSandboxes = new Map<string, SandboxManager>();
+  private readonly maxTaskDurationMs: number;
+  private readonly e2bApiKey?: string;
 
   constructor(
     private readonly repo: TaskRepository,
     private readonly eventBus: EventBus,
     private readonly tokenManager?: GitHubTokenManager,
-  ) {}
+    maxTaskDurationMs = 900_000,
+    e2bApiKey?: string,
+  ) {
+    this.maxTaskDurationMs = maxTaskDurationMs;
+    this.e2bApiKey = e2bApiKey;
+  }
+
 
 
   public async processTask(taskId: string): Promise<void> {
@@ -29,6 +74,20 @@ export class TaskWorker {
     const controller = new AbortController();
     this.activeControllers.set(taskId, controller);
 
+    let isTimedOut = false;
+    const timeoutHandle = setTimeout(() => {
+      isTimedOut = true;
+      controller.abort("Task execution timed out");
+      const activeSb = this.activeSandboxes.get(taskId);
+      if (activeSb) {
+        activeSb
+          .destroy()
+          .catch((err) =>
+            console.warn(`[task-worker] Failed to destroy sandbox on timeout for task ${taskId}:`, err),
+          );
+      }
+    }, this.maxTaskDurationMs);
+
     let sandbox: SandboxManager | undefined;
 
     try {
@@ -40,22 +99,36 @@ export class TaskWorker {
       const { authJson, apiKey } = await this.resolveCredentials(provider);
 
       // 3. Provision isolated microVM
-      const e2bApiKey = process.env.E2B_API_KEY;
+      const e2bApiKey = this.e2bApiKey || process.env.E2B_API_KEY;
       sandbox = await SandboxManager.create({
         apiKey: e2bApiKey,
-        timeoutMs: 900_000, // 15-minute sandbox lifetime guard
+        timeoutMs: this.maxTaskDurationMs,
       });
 
+      this.activeSandboxes.set(taskId, sandbox);
       await this.repo.updateTask(taskId, { sandboxId: sandbox.sandboxId });
 
       if (controller.signal.aborted) {
-        await this.updateStatus(taskId, "cancelled", "Task was cancelled before execution");
+        if (isTimedOut) {
+          const timeoutMsg = `Task timed out after ${Math.round(this.maxTaskDurationMs / 1000)}s`;
+          await this.repo.updateTask(taskId, {
+            status: "failed",
+            error: timeoutMsg,
+            completedAt: new Date().toISOString(),
+          });
+          await this.updateStatus(taskId, "failed", timeoutMsg);
+        } else {
+          await this.updateStatus(taskId, "cancelled", "Task was cancelled before execution");
+        }
         return;
       }
 
       // 4. Initialize workspace environment inside microVM
       await this.updateStatus(taskId, "cloning", "Preparing workspace and git environment");
-      await initWorkspace(sandbox);
+      const initResult = await initWorkspace(sandbox);
+      if (!initResult.firewallConfigured) {
+        console.warn(`[task-worker] Warning: Egress firewall could not be applied in sandbox for task ${taskId}`);
+      }
 
       // Clone target repository or initialize clean git workspace
       await this.setupRepository(sandbox, task);
@@ -64,7 +137,17 @@ export class TaskWorker {
       await sandbox.exec(`git checkout -B "${task.workingBranch}"`, { cwd: "/workspace" });
 
       if (controller.signal.aborted) {
-        await this.updateStatus(taskId, "cancelled", "Task was cancelled before execution");
+        if (isTimedOut) {
+          const timeoutMsg = `Task timed out after ${Math.round(this.maxTaskDurationMs / 1000)}s`;
+          await this.repo.updateTask(taskId, {
+            status: "failed",
+            error: timeoutMsg,
+            completedAt: new Date().toISOString(),
+          });
+          await this.updateStatus(taskId, "failed", timeoutMsg);
+        } else {
+          await this.updateStatus(taskId, "cancelled", "Task was cancelled before execution");
+        }
         return;
       }
 
@@ -117,7 +200,11 @@ export class TaskWorker {
 
       // 9. Evaluate outcome
       if (controller.signal.aborted) {
-        await this.updateStatus(taskId, "cancelled", "Task cancelled by user");
+        if (isTimedOut) {
+          await this.updateStatus(taskId, "failed", `Task timed out after ${Math.round(this.maxTaskDurationMs / 1000)}s`);
+        } else {
+          await this.updateStatus(taskId, "cancelled", "Task cancelled by user");
+        }
         return;
       }
 
@@ -197,12 +284,36 @@ export class TaskWorker {
           }
         }
 
+        const tokenUsage = estimateTokenUsage(result.stdout, result.stderr, task.prompt);
+
+        if (controller.signal.aborted) {
+          if (isTimedOut) {
+            const timeoutMsg = `Task timed out after ${Math.round(this.maxTaskDurationMs / 1000)}s`;
+            await this.repo.updateTask(taskId, {
+              status: "failed",
+              error: timeoutMsg,
+              completedAt: new Date().toISOString(),
+              tokenUsage,
+            });
+            await this.updateStatus(taskId, "failed", timeoutMsg);
+            await this.emitAndLog({
+              type: "error",
+              taskId,
+              message: timeoutMsg,
+              timestamp: Date.now(),
+            });
+          } else {
+            console.log(`[task-worker] Task ${taskId} was cancelled before completion recording.`);
+          }
+          return;
+        }
 
         const completedAt = new Date().toISOString();
         await this.repo.updateTask(taskId, {
           status: "completed",
           completedAt,
           pullRequestUrl,
+          tokenUsage,
         });
 
         await this.emitAndLog({
@@ -220,6 +331,7 @@ export class TaskWorker {
           taskId,
           summary: "Agent completed task",
           pullRequestUrl,
+          tokenUsage,
           timestamp: Date.now(),
         });
       } else {
@@ -247,7 +359,23 @@ export class TaskWorker {
       }
     } catch (err) {
       if (controller.signal.aborted) {
-        console.log(`[task-worker] Task ${taskId} was aborted; retaining cancelled status.`);
+        if (isTimedOut) {
+          const timeoutMsg = `Task timed out after ${Math.round(this.maxTaskDurationMs / 1000)}s`;
+          await this.repo.updateTask(taskId, {
+            status: "failed",
+            error: timeoutMsg,
+            completedAt: new Date().toISOString(),
+          });
+          await this.updateStatus(taskId, "failed", timeoutMsg);
+          await this.emitAndLog({
+            type: "error",
+            taskId,
+            message: timeoutMsg,
+            timestamp: Date.now(),
+          });
+        } else {
+          console.log(`[task-worker] Task ${taskId} was aborted; retaining cancelled status.`);
+        }
         return;
       }
 
@@ -275,7 +403,9 @@ export class TaskWorker {
         timestamp: Date.now(),
       });
     } finally {
+      clearTimeout(timeoutHandle);
       this.activeControllers.delete(taskId);
+      this.activeSandboxes.delete(taskId);
 
       // Clean up sandbox VM
       if (sandbox) {
@@ -293,10 +423,16 @@ export class TaskWorker {
     if (controller) {
       controller.abort();
       this.activeControllers.delete(taskId);
+      const sandbox = this.activeSandboxes.get(taskId);
+      if (sandbox) {
+        sandbox.destroy().catch((err) => console.warn(`[task-worker] Error destroying sandbox on cancel:`, err));
+        this.activeSandboxes.delete(taskId);
+      }
       return true;
     }
     return false;
   }
+
 
   private resolveProvider(model: string): AgentProvider {
     const lower = model.toLowerCase();

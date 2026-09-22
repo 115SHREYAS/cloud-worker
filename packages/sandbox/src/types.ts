@@ -27,6 +27,7 @@ export interface ReadFileOptions {
 
 export interface WorkspaceInitResult {
   workspacePath: string;
+  firewallConfigured?: boolean;
   tools: {
     git?: string;
     node?: string;
@@ -34,6 +35,7 @@ export interface WorkspaceInitResult {
     python?: string;
   };
 }
+
 
 export interface AgentSessionConfig {
   provider?: AgentProvider;

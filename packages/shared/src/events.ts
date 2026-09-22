@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { TaskStatusSchema } from "./task";
+import { TaskStatusSchema, TokenUsageSchema } from "./task";
 import { AgentToolNameSchema, type AgentToolName } from "./tools";
 
 export const LogChunkStdoutEventSchema = z.object({
@@ -77,6 +77,7 @@ export const TaskDoneEventSchema = z.object({
   taskId: z.string(),
   pullRequestUrl: z.string().url().optional(),
   summary: z.string().optional(),
+  tokenUsage: TokenUsageSchema.optional(),
   timestamp: z.number(),
 });
 
