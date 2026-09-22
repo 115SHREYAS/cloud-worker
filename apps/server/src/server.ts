@@ -6,13 +6,17 @@ import type { AgentProvider } from "@cloud-worker/sandbox";
 import type { TaskRepository } from "./db/repository.ts";
 import type { EventBus } from "./events/event-bus.ts";
 import type { TaskQueue } from "./queue/task-queue.ts";
+import type { GitHubTokenManager } from "./github/token-manager.ts";
+import { handleGitHubWebhook } from "./github/webhooks.ts";
 
 export interface ServerOptions {
   port?: number;
   repo: TaskRepository;
   eventBus: EventBus;
   queue: TaskQueue;
+  tokenManager?: GitHubTokenManager;
 }
+
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -21,7 +25,8 @@ const CORS_HEADERS: Record<string, string> = {
 };
 
 export function createServer(options: ServerOptions) {
-  const { port = 3001, repo, eventBus, queue } = options;
+  const { port = 3001, repo, eventBus, queue, tokenManager } = options;
+
 
   const server = Bun.serve({
     port,
@@ -298,7 +303,101 @@ export function createServer(options: ServerOptions) {
           );
         }
 
+        // GitHub webhook receiver
+        if (path === "/api/webhooks/github" && method === "POST") {
+          const rawBody = await req.text();
+          const event = req.headers.get("x-github-event") || "unknown";
+          const signature = req.headers.get("x-hub-signature-256") || undefined;
+          const secret = process.env.GITHUB_WEBHOOK_SECRET;
+
+          try {
+            const result = await handleGitHubWebhook({
+              event,
+              signature,
+              rawBody,
+              secret,
+              repository: repo,
+              taskQueue: queue,
+              tokenManager,
+            });
+            return Response.json(result, { headers: CORS_HEADERS });
+          } catch (err: unknown) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            if (errMsg.includes("Invalid x-hub-signature-256") || errMsg.includes("Missing x-hub-signature-256")) {
+              return Response.json({ error: errMsg }, { status: 401, headers: CORS_HEADERS });
+            }
+            return Response.json({ error: errMsg }, { status: 400, headers: CORS_HEADERS });
+          }
+        }
+
+        // GitHub App status
+        if (path === "/api/github/status" && method === "GET") {
+          return Response.json(
+            {
+              configured: tokenManager?.isConfigured() ?? false,
+              appId: tokenManager?.getAppId(),
+            },
+            { headers: CORS_HEADERS },
+          );
+        }
+
+        // List GitHub App installations
+        if (path === "/api/github/installations" && method === "GET") {
+          const installations = await repo.listInstallations();
+          return Response.json({ installations }, { headers: CORS_HEADERS });
+        }
+
+        // List accessible GitHub repositories across installations
+        if (path === "/api/github/repositories" && method === "GET") {
+          const requestedInstallationId = url.searchParams.get("installationId");
+          const installations = await repo.listInstallations();
+
+          const targetInstallations = requestedInstallationId
+            ? installations.filter((i) => i.id === parseInt(requestedInstallationId, 10))
+            : installations;
+
+          const repositories: Array<{
+            id: number;
+            owner: string;
+            name: string;
+            fullName: string;
+            private: boolean;
+            defaultBranch: string;
+            htmlUrl: string;
+            installationId: number;
+          }> = [];
+
+          if (tokenManager && tokenManager.isConfigured()) {
+            for (const inst of targetInstallations) {
+              try {
+                const octokit = await tokenManager.getInstallationOctokit(inst.id);
+                const repos = await octokit.paginate(octokit.rest.apps.listReposAccessibleToInstallation, {
+                  per_page: 100,
+                });
+                for (const r of repos) {
+                  repositories.push({
+                    id: r.id,
+                    owner: r.owner.login,
+                    name: r.name,
+                    fullName: r.full_name,
+                    private: r.private,
+                    defaultBranch: r.default_branch,
+                    htmlUrl: r.html_url,
+                    installationId: inst.id,
+                  });
+                }
+              } catch (err) {
+                console.warn(`[server] Failed to fetch repositories for installation ${inst.id}:`, err);
+              }
+            }
+          }
+
+
+          return Response.json({ repositories }, { headers: CORS_HEADERS });
+        }
+
         return new Response("Not Found", { status: 404, headers: CORS_HEADERS });
+
       } catch (err) {
         console.error("[server] Request handling error:", err);
         return Response.json(

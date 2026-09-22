@@ -2,6 +2,8 @@ import type { TaskRepository, TaskRecord } from "../db/repository.ts";
 import type { EventBus } from "../events/event-bus.ts";
 import type { StreamEvent, TaskStatus } from "@cloud-worker/shared";
 import { SandboxManager, AgentSession, initWorkspace, type AgentProvider } from "@cloud-worker/sandbox";
+import type { GitHubTokenManager } from "../github/token-manager.ts";
+import { createPullRequest, formatPullRequestBody } from "../github/pull-request.ts";
 
 export class TaskWorker {
   private readonly activeControllers = new Map<string, AbortController>();
@@ -9,7 +11,9 @@ export class TaskWorker {
   constructor(
     private readonly repo: TaskRepository,
     private readonly eventBus: EventBus,
+    private readonly tokenManager?: GitHubTokenManager,
   ) {}
+
 
   public async processTask(taskId: string): Promise<void> {
     const task = await this.repo.getTask(taskId);
@@ -118,17 +122,96 @@ export class TaskWorker {
       }
 
       if (result.exitCode === 0) {
+        // Commit any uncommitted edits safely via commit message file to prevent shell injection
+        const commitMsg = `feat(agent): ${task.prompt.slice(0, 60).replace(/\r?\n/g, " ")}`;
+        await sandbox.writeFile("/tmp/.commit_msg.txt", commitMsg);
+        await sandbox.exec(
+          "git add -A && git diff-index --quiet HEAD || git commit -F /tmp/.commit_msg.txt",
+          { cwd: "/workspace" },
+        );
+
+        const finalDiff = (await sandbox.gitDiff()) || result.diff || undefined;
+        if (finalDiff) {
+          await this.repo.updateTask(taskId, { diff: finalDiff });
+        }
+
+        let pullRequestUrl: string | undefined;
+
+        // Push working branch and open pull request if authenticated and changes exist
+        const hasAuth = Boolean(task.repo.installationId || process.env.GITHUB_TOKEN);
+        const hasDiff = Boolean(finalDiff && finalDiff.trim().length > 0);
+
+        if (hasAuth && hasDiff) {
+          try {
+            // Re-acquire fresh token to ensure it has not expired during the agent run
+            let pushToken = process.env.GITHUB_TOKEN;
+            if (task.repo.installationId && this.tokenManager && this.tokenManager.isConfigured()) {
+              try {
+                pushToken = await this.tokenManager.getInstallationToken(task.repo.installationId);
+              } catch (tokenErr) {
+                console.warn(`[task-worker] Failed to refresh installation token for push:`, tokenErr);
+              }
+            }
+
+            if (pushToken) {
+              const freshPushUrl = `https://x-access-token:${pushToken}@github.com/${task.repo.owner}/${task.repo.repo}.git`;
+              await sandbox.exec(`git remote set-url origin "${freshPushUrl}"`, { cwd: "/workspace" });
+            }
+
+            await this.emitAndLog({
+              type: "status",
+              taskId,
+              status: "running",
+              message: `Pushing working branch ${task.workingBranch} to GitHub`,
+              timestamp: Date.now(),
+            });
+
+            const pushResult = await sandbox.exec(
+              `git push -u origin "${task.workingBranch}"`,
+              { cwd: "/workspace", timeoutMs: 60_000 },
+            );
+
+            if (pushResult.exitCode === 0 || pushResult.stderr.includes("Everything up-to-date")) {
+              const pr = await createPullRequest({
+                installationId: task.repo.installationId,
+                owner: task.repo.owner,
+                repo: task.repo.repo,
+                branch: task.workingBranch,
+                baseBranch: task.repo.branch || "main",
+                title: `feat(agent): ${task.prompt.slice(0, 60).replace(/\n/g, " ")}`,
+                body: formatPullRequestBody({
+                  taskId: task.id,
+                  prompt: task.prompt,
+                  model: task.model,
+                  workingBranch: task.workingBranch,
+                  diffSummary: finalDiff,
+                }),
+                tokenManager: this.tokenManager,
+              });
+              pullRequestUrl = pr.pullRequestUrl;
+            } else {
+              console.warn(`[task-worker] Branch push exited with code ${pushResult.exitCode}: ${pushResult.stderr}`);
+            }
+          } catch (prErr) {
+            console.warn(`[task-worker] Push or PR creation failed for ${taskId}:`, prErr);
+          }
+        }
+
+
         const completedAt = new Date().toISOString();
         await this.repo.updateTask(taskId, {
           status: "completed",
           completedAt,
+          pullRequestUrl,
         });
 
         await this.emitAndLog({
           type: "status",
           taskId,
           status: "completed",
-          message: "Agent finished execution successfully",
+          message: pullRequestUrl
+            ? `Agent finished execution and opened PR: ${pullRequestUrl}`
+            : "Agent finished execution successfully",
           timestamp: Date.now(),
         });
 
@@ -136,6 +219,7 @@ export class TaskWorker {
           type: "done",
           taskId,
           summary: "Agent completed task",
+          pullRequestUrl,
           timestamp: Date.now(),
         });
       } else {
@@ -253,11 +337,23 @@ export class TaskWorker {
   }
 
   private async setupRepository(sandbox: SandboxManager, task: TaskRecord): Promise<void> {
-    const { owner, repo, branch, baseCommit } = task.repo;
-    const githubToken = process.env.GITHUB_TOKEN;
+    const { owner, repo, branch, baseCommit, installationId } = task.repo;
+
+    let githubToken = process.env.GITHUB_TOKEN;
+    if (installationId && this.tokenManager && this.tokenManager.isConfigured()) {
+      try {
+        githubToken = await this.tokenManager.getInstallationToken(installationId);
+      } catch (tokenErr) {
+        console.warn(`[task-worker] Failed to get installation token for ${installationId}:`, tokenErr);
+      }
+    }
+
     const cloneUrl = githubToken
       ? `https://x-access-token:${githubToken}@github.com/${owner}/${repo}.git`
       : `https://github.com/${owner}/${repo}.git`;
+
+    const appId = this.tokenManager?.getAppId();
+    const botEmail = appId ? `${appId}+cloud-worker[bot]@users.noreply.github.com` : "agent@cloud-worker.bot";
 
     // Attempt to clone the remote repository into /workspace
     const cloneResult = await sandbox.exec(
@@ -266,6 +362,11 @@ export class TaskWorker {
     );
 
     if (cloneResult.exitCode === 0) {
+      await sandbox.exec(`git config user.name "cloud-worker[bot]"`, { cwd: "/workspace" });
+      await sandbox.exec(`git config user.email "${botEmail}"`, { cwd: "/workspace" });
+      if (githubToken) {
+        await sandbox.exec(`git remote set-url origin "${cloneUrl}"`, { cwd: "/workspace" });
+      }
       if (baseCommit) {
         await sandbox.exec(`git checkout "${baseCommit}"`, { cwd: "/workspace" });
       }
@@ -276,9 +377,12 @@ export class TaskWorker {
     const checkGit = await sandbox.exec("git rev-parse --is-inside-work-tree", { cwd: "/workspace" });
     if (checkGit.exitCode !== 0) {
       await sandbox.exec("git init -b main", { cwd: "/workspace" });
-      await sandbox.exec("git config user.name 'Cloud Worker Agent'", { cwd: "/workspace" });
-      await sandbox.exec("git config user.email 'agent@cloudworker.local'", { cwd: "/workspace" });
+      await sandbox.exec(`git config user.name "cloud-worker[bot]"`, { cwd: "/workspace" });
+      await sandbox.exec(`git config user.email "${botEmail}"`, { cwd: "/workspace" });
       await sandbox.exec("git commit --allow-empty -m 'Initial workspace commit'", { cwd: "/workspace" });
+      if (githubToken) {
+        await sandbox.exec(`git remote add origin "${cloneUrl}"`, { cwd: "/workspace" });
+      }
     }
   }
 

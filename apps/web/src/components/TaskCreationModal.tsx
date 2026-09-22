@@ -2,13 +2,22 @@
 
 import { useState, useEffect } from "react";
 import { CreateTaskInputSchema, type CreateTaskInput, type Task } from "@cloud-worker/shared";
-import { createTask } from "../lib/api";
-import { X, Sparkles, AlertCircle, Loader2 } from "lucide-react";
+import { createTask, fetchGitHubRepositories } from "../lib/api";
+import { X, Sparkles, AlertCircle, Loader2, GitBranch } from "lucide-react";
 
 interface TaskCreationModalProps {
   isOpen: boolean;
   onClose: () => void;
   onTaskCreated: (task: Task) => void;
+}
+
+interface InstalledRepoItem {
+  id: number;
+  owner: string;
+  name: string;
+  fullName: string;
+  defaultBranch: string;
+  installationId: number;
 }
 
 const SAMPLE_PROMPTS = [
@@ -21,6 +30,10 @@ export function TaskCreationModal({ isOpen, onClose, onTaskCreated }: TaskCreati
   const [owner, setOwner] = useState("");
   const [repo, setRepo] = useState("");
   const [branch, setBranch] = useState("main");
+  const [installationId, setInstallationId] = useState<number | undefined>(undefined);
+  const [installedRepos, setInstalledRepos] = useState<InstalledRepoItem[]>([]);
+  const [selectedRepoKey, setSelectedRepoKey] = useState<string>("manual");
+  const [isLoadingRepos, setIsLoadingRepos] = useState(true);
   const [model, setModel] = useState("codex");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -35,6 +48,45 @@ export function TaskCreationModal({ isOpen, onClose, onTaskCreated }: TaskCreati
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    fetchGitHubRepositories()
+      .then((repos) => {
+        if (!cancelled && Array.isArray(repos)) {
+          setInstalledRepos(repos);
+        }
+      })
+      .catch(() => {
+        // Silently fall back to manual entry if GitHub API fails
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingRepos(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
+
+
+  const handleSelectInstalledRepo = (key: string) => {
+    setSelectedRepoKey(key);
+    if (key === "manual") {
+      setInstallationId(undefined);
+      return;
+    }
+    const found = installedRepos.find((r) => String(r.id) === key);
+    if (found) {
+      setOwner(found.owner);
+      setRepo(found.name);
+      setBranch(found.defaultBranch || "main");
+      setInstallationId(found.installationId);
+    }
+  };
+
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -46,10 +98,12 @@ export function TaskCreationModal({ isOpen, onClose, onTaskCreated }: TaskCreati
         owner: owner.trim(),
         repo: repo.trim(),
         branch: branch.trim() || "main",
+        installationId,
       },
       model,
       prompt: prompt.trim(),
     };
+
 
     const parsed = CreateTaskInputSchema.safeParse(payload);
     if (!parsed.success) {
@@ -106,8 +160,43 @@ export function TaskCreationModal({ isOpen, onClose, onTaskCreated }: TaskCreati
             </div>
           )}
 
+          {/* Installed Repositories Picker (if available) */}
+          {isLoadingRepos ? (
+            <div className="h-10 rounded-lg bg-zinc-900/50 border border-zinc-800 flex items-center px-3 gap-2 text-xs text-zinc-500 animate-pulse">
+              <GitBranch className="w-3.5 h-3.5 text-zinc-600" />
+              <span>Checking connected GitHub repositories...</span>
+            </div>
+          ) : installedRepos.length > 0 ? (
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label htmlFor="installed-repo-select" className="text-xs font-medium text-zinc-300 flex items-center gap-1.5">
+                  <GitBranch className="w-3.5 h-3.5 text-emerald-400" />
+                  Select connected repository
+                </label>
+                <span className="text-[11px] text-zinc-500 font-normal">
+                  {installedRepos.length} {installedRepos.length === 1 ? "repo" : "repos"} found
+                </span>
+              </div>
+              <select
+                id="installed-repo-select"
+                value={selectedRepoKey}
+                onChange={(e) => handleSelectInstalledRepo(e.target.value)}
+                className="w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-800 rounded-lg text-zinc-100 focus:outline-hidden focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
+              >
+                <option value="manual">Manual repository input</option>
+                {installedRepos.map((r) => (
+                  <option key={r.id} value={String(r.id)}>
+                    {r.fullName} ({r.defaultBranch || "main"})
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+
+
           {/* Repo Owner & Name */}
           <div className="grid grid-cols-2 gap-3">
+
             <div>
               <label htmlFor="repo-owner" className="block text-xs font-medium text-zinc-300 mb-1.5">
                 GitHub owner <span className="text-rose-400">*</span>

@@ -1,9 +1,16 @@
-import type { StreamEvent, Task, TaskStatus, CreateTaskInput } from "@cloud-worker/shared";
+import type { StreamEvent, Task, TaskStatus, CreateTaskInput, GitHubInstallation } from "@cloud-worker/shared";
 import type { AgentProvider } from "@cloud-worker/sandbox";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { eq, desc, asc } from "drizzle-orm";
-import { tasks, taskLogs, authSessions, type TaskRow } from "./schema.ts";
+import {
+  tasks,
+  taskLogs,
+  authSessions,
+  githubInstallations,
+  type TaskRow,
+  type GitHubInstallationRow,
+} from "./schema.ts";
 
 export interface TaskRecord extends Task {
   diff?: string;
@@ -19,8 +26,13 @@ export interface TaskRepository {
   saveAuthSession(provider: AgentProvider, authJson: string, userId?: string): Promise<void>;
   getAuthSession(provider: AgentProvider, userId?: string): Promise<string | null>;
   hasAuthSession(provider: AgentProvider, userId?: string): Promise<boolean>;
+  saveInstallation(installation: GitHubInstallation): Promise<void>;
+  getInstallation(installationId: number): Promise<GitHubInstallation | null>;
+  listInstallations(): Promise<GitHubInstallation[]>;
+  deleteInstallation(installationId: number): Promise<void>;
   close(): Promise<void>;
 }
+
 
 function mapRowToTask(row: TaskRow): TaskRecord {
   return {
@@ -55,14 +67,27 @@ function mapRowToTask(row: TaskRow): TaskRecord {
   };
 }
 
+function mapRowToInstallation(row: GitHubInstallationRow): GitHubInstallation {
+  return {
+    id: row.installationId,
+    accountLogin: row.accountLogin,
+    accountType: row.accountType as "User" | "Organization",
+    repositorySelection: row.repositorySelection as "all" | "selected",
+    appSlug: row.appSlug ?? undefined,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
 export class DrizzleTaskRepository implements TaskRepository {
   private readonly db;
   private readonly client: postgres.Sql;
 
   constructor(connectionString: string) {
     this.client = postgres(connectionString, { max: 10, idle_timeout: 20 });
-    this.db = drizzle(this.client, { schema: { tasks, taskLogs, authSessions } });
+    this.db = drizzle(this.client, { schema: { tasks, taskLogs, authSessions, githubInstallations } });
   }
+
 
   async createTask(id: string, input: CreateTaskInput, workingBranch: string): Promise<TaskRecord> {
     const now = new Date();
@@ -189,15 +214,69 @@ export class DrizzleTaskRepository implements TaskRepository {
     return session !== null && session.trim().length > 0;
   }
 
+  async saveInstallation(installation: GitHubInstallation): Promise<void> {
+    const id = String(installation.id);
+    const now = new Date();
+    await this.db
+      .insert(githubInstallations)
+      .values({
+        id,
+        installationId: installation.id,
+        accountLogin: installation.accountLogin,
+        accountType: installation.accountType,
+        repositorySelection: installation.repositorySelection,
+        appSlug: installation.appSlug,
+        createdAt: new Date(installation.createdAt),
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: githubInstallations.installationId,
+        set: {
+          accountLogin: installation.accountLogin,
+          accountType: installation.accountType,
+          repositorySelection: installation.repositorySelection,
+          appSlug: installation.appSlug,
+          updatedAt: now,
+        },
+      });
+  }
+
+  async getInstallation(installationId: number): Promise<GitHubInstallation | null> {
+    const rows = await this.db
+      .select()
+      .from(githubInstallations)
+      .where(eq(githubInstallations.installationId, installationId))
+      .limit(1);
+    const first = rows[0];
+    return first ? mapRowToInstallation(first) : null;
+  }
+
+  async listInstallations(): Promise<GitHubInstallation[]> {
+    const rows = await this.db
+      .select()
+      .from(githubInstallations)
+      .orderBy(desc(githubInstallations.updatedAt));
+    return rows.map(mapRowToInstallation);
+  }
+
+  async deleteInstallation(installationId: number): Promise<void> {
+    await this.db
+      .delete(githubInstallations)
+      .where(eq(githubInstallations.installationId, installationId));
+  }
+
   async close(): Promise<void> {
     await this.client.end();
   }
 }
 
+
 export class MemoryTaskRepository implements TaskRepository {
   private readonly tasks = new Map<string, TaskRecord>();
   private readonly logs = new Map<string, StreamEvent[]>();
   private readonly sessions = new Map<string, string>();
+  private readonly installations = new Map<number, GitHubInstallation>();
+
 
   async createTask(id: string, input: CreateTaskInput, workingBranch: string): Promise<TaskRecord> {
     const now = new Date().toISOString();
@@ -266,9 +345,31 @@ export class MemoryTaskRepository implements TaskRepository {
     return session !== undefined && session.trim().length > 0;
   }
 
+  async saveInstallation(installation: GitHubInstallation): Promise<void> {
+    this.installations.set(installation.id, {
+      ...installation,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  async getInstallation(installationId: number): Promise<GitHubInstallation | null> {
+    return this.installations.get(installationId) ?? null;
+  }
+
+  async listInstallations(): Promise<GitHubInstallation[]> {
+    const list = Array.from(this.installations.values());
+    list.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    return list;
+  }
+
+  async deleteInstallation(installationId: number): Promise<void> {
+    this.installations.delete(installationId);
+  }
+
   async close(): Promise<void> {
     // No-op for memory repository
   }
+
 }
 
 export async function createTaskRepository(connectionString?: string): Promise<TaskRepository> {

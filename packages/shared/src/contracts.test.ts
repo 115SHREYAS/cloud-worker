@@ -77,4 +77,52 @@ describe("Domain contracts (@cloud-worker/shared)", () => {
     const toolNames = AGENT_TOOLS.map((t) => t.name);
     expect(toolNames).toEqual(["bash", "read_file", "write_file", "list_dir", "git_diff"]);
   });
+
+  it("validates GitHub domain contracts", async () => {
+    const { GitHubInstallationSchema, GitHubRepositorySchema, CreatePullRequestInputSchema, PullRequestResultSchema } = await import("./github");
+
+    const installation = GitHubInstallationSchema.parse({
+      id: 98765,
+      accountLogin: "acme-corp",
+      accountType: "Organization",
+      repositorySelection: "selected",
+      appSlug: "cloud-worker-bot",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    expect(installation.id).toBe(98765);
+    expect(installation.accountType).toBe("Organization");
+
+    const repository = GitHubRepositorySchema.parse({
+      id: 112233,
+      owner: "acme-corp",
+      name: "payment-api",
+      fullName: "acme-corp/payment-api",
+      private: true,
+      defaultBranch: "main",
+      htmlUrl: "https://github.com/acme-corp/payment-api",
+      installationId: 98765,
+    });
+    expect(repository.name).toBe("payment-api");
+    expect(repository.private).toBe(true);
+
+    const prInput = CreatePullRequestInputSchema.parse({
+      installationId: 98765,
+      owner: "acme-corp",
+      repo: "payment-api",
+      branch: "agent/patch-abc",
+      baseBranch: "main",
+      title: "fix: resolve memory leak in worker",
+      body: "## Summary\n\nFixed event listener leak in Redis subscriber.",
+    });
+    expect(prInput.branch).toBe("agent/patch-abc");
+
+    const prResult = PullRequestResultSchema.parse({
+      pullRequestNumber: 42,
+      pullRequestUrl: "https://github.com/acme-corp/payment-api/pull/42",
+      state: "open",
+    });
+    expect(prResult.pullRequestNumber).toBe(42);
+  });
 });
+

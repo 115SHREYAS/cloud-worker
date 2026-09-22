@@ -2,6 +2,7 @@ import { createTaskRepository } from "./src/db/index.ts";
 import { createEventBus } from "./src/events/index.ts";
 import { TaskWorker, createTaskQueue } from "./src/queue/index.ts";
 import { createServer } from "./src/server.ts";
+import { GitHubTokenManager } from "./src/github/index.ts";
 
 const PORT = Number(process.env.PORT) || 3001;
 
@@ -14,17 +15,27 @@ async function bootstrap() {
   // 2. Initialize real-time event bus (Redis Pub/Sub or Memory fallback)
   const eventBus = await createEventBus(process.env.REDIS_URL);
 
-  // 3. Initialize task worker and queue (BullMQ or Direct queue fallback)
-  const worker = new TaskWorker(repo, eventBus);
+  // 3. Initialize GitHub App token manager
+  const tokenManager = new GitHubTokenManager();
+  if (tokenManager.isConfigured()) {
+    console.log(`[github] GitHub App configured (App ID: ${tokenManager.getAppId()})`);
+  } else {
+    console.log("[github] GitHub App not configured. Running in token fallback / demo mode.");
+  }
+
+  // 4. Initialize task worker and queue (BullMQ or Direct queue fallback)
+  const worker = new TaskWorker(repo, eventBus, tokenManager);
   const queue = await createTaskQueue(worker, process.env.REDIS_URL);
 
-  // 4. Start HTTP and SSE server
+  // 5. Start HTTP and SSE server
   const server = createServer({
     port: PORT,
     repo,
     eventBus,
     queue,
+    tokenManager,
   });
+
 
   console.log(`Cloud Worker API listening at http://localhost:${server.port}`);
 

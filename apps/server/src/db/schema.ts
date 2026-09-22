@@ -42,9 +42,23 @@ export const authSessions = pgTable("auth_sessions", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const githubInstallations = pgTable("github_installations", {
+  id: text("id").primaryKey(),
+  installationId: integer("installation_id").notNull().unique(),
+  accountLogin: text("account_login").notNull(),
+  accountType: text("account_type").notNull(),
+  repositorySelection: text("repository_selection").notNull(),
+  appSlug: text("app_slug"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type TaskRow = typeof tasks.$inferSelect;
 export type InsertTaskRow = typeof tasks.$inferInsert;
 export type TaskLogRow = typeof taskLogs.$inferSelect;
 export type InsertTaskLogRow = typeof taskLogs.$inferInsert;
 export type AuthSessionRow = typeof authSessions.$inferSelect;
 export type InsertAuthSessionRow = typeof authSessions.$inferInsert;
+export type GitHubInstallationRow = typeof githubInstallations.$inferSelect;
+export type InsertGitHubInstallationRow = typeof githubInstallations.$inferInsert;
+
