@@ -48,6 +48,7 @@ export const TaskSchema = z.object({
   workingBranch: z.string(),
   sandboxId: z.string().optional(),
   pullRequestUrl: z.string().url().optional(),
+  diff: z.string().optional(),
   tokenUsage: TokenUsageSchema.optional(),
   error: z.string().optional(),
   createdAt: z.string().datetime(),
