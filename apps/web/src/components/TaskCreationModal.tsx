@@ -1,9 +1,15 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { CreateTaskInputSchema, type CreateTaskInput, type Task } from "@cloud-worker/shared";
+import {
+  CreateTaskInputSchema,
+  AVAILABLE_MODELS,
+  type CreateTaskInput,
+  type Task,
+  type ReasoningEffort,
+} from "@cloud-worker/shared";
 import { createTask, fetchGitHubRepositories } from "../lib/api";
-import { X, Sparkles, AlertCircle, Loader2, GitBranch } from "lucide-react";
+import { X, Sparkles, AlertCircle, Loader2, GitBranch, BrainCircuit } from "lucide-react";
 
 interface TaskCreationModalProps {
   isOpen: boolean;
@@ -35,9 +41,22 @@ export function TaskCreationModal({ isOpen, onClose, onTaskCreated }: TaskCreati
   const [selectedRepoKey, setSelectedRepoKey] = useState<string>("manual");
   const [isLoadingRepos, setIsLoadingRepos] = useState(true);
   const [model, setModel] = useState("codex");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleModelChange = (newModel: string) => {
+    setModel(newModel);
+    const found = AVAILABLE_MODELS.find((m) => m.id === newModel);
+    if (found?.defaultEffort) {
+      setReasoningEffort(found.defaultEffort);
+    }
+  };
+
+  const selectedModelObj = AVAILABLE_MODELS.find((m) => m.id === model);
+  const codexModels = AVAILABLE_MODELS.filter((m) => m.provider === "codex");
+  const claudeModels = AVAILABLE_MODELS.filter((m) => m.provider === "claude");
 
   useEffect(() => {
     if (!isOpen) return;
@@ -101,6 +120,7 @@ export function TaskCreationModal({ isOpen, onClose, onTaskCreated }: TaskCreati
         installationId,
       },
       model,
+      reasoningEffort: selectedModelObj?.supportsReasoning ? reasoningEffort : undefined,
       prompt: prompt.trim(),
     };
 
@@ -130,15 +150,15 @@ export function TaskCreationModal({ isOpen, onClose, onTaskCreated }: TaskCreati
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-modal-title"
-        className="w-full max-w-xl bg-zinc-950 border border-zinc-800 rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        className="w-full max-w-xl max-h-[92vh] flex flex-col bg-zinc-950 border border-zinc-800 rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-900/60">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 sm:py-4 border-b border-zinc-800 bg-zinc-900/60 shrink-0">
           <div className="flex items-center gap-2.5">
             <span className="flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
               <Sparkles className="w-4 h-4" />
             </span>
-            <h2 id="create-modal-title" className="text-base font-semibold text-zinc-100">
+            <h2 id="create-modal-title" className="text-sm sm:text-base font-semibold text-zinc-100">
               Create coding task
             </h2>
           </div>
@@ -152,7 +172,7 @@ export function TaskCreationModal({ isOpen, onClose, onTaskCreated }: TaskCreati
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+        <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-4 sm:space-y-5 overflow-y-auto flex-1">
           {error && (
             <div className="flex items-start gap-2.5 p-3 rounded-lg bg-rose-950/40 border border-rose-900/60 text-rose-300 text-xs">
               <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
@@ -193,10 +213,8 @@ export function TaskCreationModal({ isOpen, onClose, onTaskCreated }: TaskCreati
             </div>
           ) : null}
 
-
           {/* Repo Owner & Name */}
-          <div className="grid grid-cols-2 gap-3">
-
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label htmlFor="repo-owner" className="block text-xs font-medium text-zinc-300 mb-1.5">
                 GitHub owner <span className="text-rose-400">*</span>
@@ -229,7 +247,7 @@ export function TaskCreationModal({ isOpen, onClose, onTaskCreated }: TaskCreati
           </div>
 
           {/* Branch & Harness Model */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label htmlFor="repo-branch" className="block text-xs font-medium text-zinc-300 mb-1.5">
                 Target branch
@@ -246,19 +264,86 @@ export function TaskCreationModal({ isOpen, onClose, onTaskCreated }: TaskCreati
 
             <div>
               <label htmlFor="agent-model" className="block text-xs font-medium text-zinc-300 mb-1.5">
-                Agent harness
+                Model & harness
               </label>
               <select
                 id="agent-model"
                 value={model}
-                onChange={(e) => setModel(e.target.value)}
+                onChange={(e) => handleModelChange(e.target.value)}
                 className="w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-800 rounded-lg text-zinc-100 focus:outline-hidden focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
               >
-                <option value="codex">OpenAI Codex CLI (Subscription tier)</option>
-                <option value="claude-3-7-sonnet-20250219">Claude Code CLI (Claude tier)</option>
+                <optgroup label="OpenAI Codex">
+                  {codexModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} {m.badge ? `• ${m.badge}` : ""}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="Claude Code">
+                  {claudeModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} {m.badge ? `• ${m.badge}` : ""}
+                    </option>
+                  ))}
+                </optgroup>
               </select>
             </div>
           </div>
+
+          {/* Model info & reasoning effort selector */}
+          {selectedModelObj && (
+            <div className="space-y-3 rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-zinc-400 font-medium">Model description</span>
+                {selectedModelObj.badge && (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    {selectedModelObj.badge}
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-zinc-400 leading-relaxed">
+                {selectedModelObj.description}
+              </p>
+
+              {selectedModelObj.supportsReasoning && (
+                <div className="pt-2 border-t border-zinc-800/60 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-zinc-300 flex items-center gap-1.5">
+                      <BrainCircuit className="w-3.5 h-3.5 text-emerald-400" />
+                      Reasoning effort / Extended thinking
+                    </label>
+                    <span className="text-[11px] font-mono text-emerald-400 capitalize">
+                      {reasoningEffort}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {(["none", "low", "medium", "high"] as const).map((effort) => (
+                      <button
+                        key={effort}
+                        type="button"
+                        onClick={() => setReasoningEffort(effort)}
+                        className={`py-1.5 px-2 rounded-md text-xs font-medium capitalize transition-colors cursor-pointer border ${
+                          reasoningEffort === effort
+                            ? "bg-emerald-600/20 border-emerald-500/50 text-emerald-300"
+                            : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+                        }`}
+                      >
+                        {effort}
+                      </button>
+                    ))}
+                  </div>
+
+                  <p className="text-[10px] text-zinc-500">
+                    {reasoningEffort === "none" && "No extra reasoning pass; immediate code edits."}
+                    {reasoningEffort === "low" && "Fast reasoning pass for direct fixes."}
+                    {reasoningEffort === "medium" && "Balanced reasoning for bugs, tests, and refactoring."}
+                    {reasoningEffort === "high" && "Deep multi-step reasoning for intricate architectures."}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Prompt */}
           <div>

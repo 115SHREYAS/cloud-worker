@@ -1,7 +1,7 @@
 "use client";
 
-import type { Task, TaskStatus } from "@cloud-worker/shared";
-import { Plus, KeyRound, RefreshCw, Cpu } from "lucide-react";
+import type { Task, TaskStatus, UserPublicProfile } from "@cloud-worker/shared";
+import { Plus, KeyRound, RefreshCw, Cpu, Compass, LogOut, X } from "lucide-react";
 
 interface TaskSidebarProps {
   tasks: Task[];
@@ -11,6 +11,11 @@ interface TaskSidebarProps {
   onOpenAuth: () => void;
   onRefresh: () => void;
   isLoading?: boolean;
+  currentUser?: UserPublicProfile | null;
+  onWalkthrough?: () => void;
+  onLogout?: () => void;
+  isOpen?: boolean;
+  onClose?: () => void;
 }
 
 export function TaskSidebar({
@@ -21,6 +26,11 @@ export function TaskSidebar({
   onOpenAuth,
   onRefresh,
   isLoading,
+  currentUser,
+  onWalkthrough,
+  onLogout,
+  isOpen = false,
+  onClose,
 }: TaskSidebarProps) {
   const getStatusDot = (st: TaskStatus) => {
     switch (st) {
@@ -42,41 +52,71 @@ export function TaskSidebar({
   };
 
   return (
-    <aside className="w-80 h-full flex flex-col bg-zinc-950 border-r border-zinc-800 select-none shrink-0">
-      {/* Brand Header */}
-      <div className="flex items-center justify-between p-4 border-b border-zinc-800 bg-zinc-900/40">
-        <div className="flex items-center gap-2.5">
-          <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-            <Cpu className="w-4 h-4" />
+    <>
+      {/* Mobile Backdrop */}
+      {isOpen && (
+        <div
+          role="presentation"
+          onClick={onClose}
+          className="fixed inset-0 z-40 bg-black/70 backdrop-blur-xs md:hidden"
+        />
+      )}
+
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 w-72 sm:w-80 h-full flex flex-col bg-zinc-950 border-r border-zinc-800 select-none shrink-0 transition-transform duration-200 ease-in-out md:relative md:z-0 md:translate-x-0 ${
+          isOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+        }`}
+      >
+        {/* Brand Header */}
+        <div className="flex items-center justify-between p-4 border-b border-zinc-800 bg-zinc-900/40">
+          <div className="flex items-center gap-2.5">
+            <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              <Cpu className="w-4 h-4" />
+            </div>
+            <div>
+              <h1 className="text-sm font-semibold text-zinc-100">Cloud Worker</h1>
+              <span className="text-[10px] text-zinc-400 font-mono">Agent Control Plane</span>
+            </div>
           </div>
-          <div>
-            <h1 className="text-sm font-semibold text-zinc-100">Cloud Worker</h1>
-            <span className="text-[10px] text-zinc-400 font-mono">Agent Control Plane</span>
+
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={isLoading}
+              title="Refresh task list"
+              className="p-1.5 rounded-lg border border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
+            </button>
+
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                title="Close task menu"
+                className="md:hidden p-1.5 rounded-lg border border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={onRefresh}
-          disabled={isLoading}
-          title="Refresh task list"
-          className="p-1.5 rounded-lg border border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors cursor-pointer"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
-        </button>
-      </div>
-
-      {/* New Task Action */}
-      <div className="p-3 border-b border-zinc-800/80">
-        <button
-          type="button"
-          onClick={onNewTask}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs transition-colors cursor-pointer"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>New coding task</span>
-        </button>
-      </div>
+        {/* New Task Action */}
+        <div className="p-3 border-b border-zinc-800/80">
+          <button
+            type="button"
+            onClick={() => {
+              onNewTask();
+              onClose?.();
+            }}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs transition-colors cursor-pointer"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>New coding task</span>
+          </button>
+        </div>
 
       {/* Tasks List */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -99,7 +139,10 @@ export function TaskSidebar({
               <button
                 key={task.id}
                 type="button"
-                onClick={() => onSelectTask(task.id)}
+                onClick={() => {
+                  onSelectTask(task.id);
+                  onClose?.();
+                }}
                 className={`w-full text-left p-3 rounded-lg border transition-all cursor-pointer ${
                   isSelected
                     ? "bg-zinc-900 border-zinc-700 shadow-xs"
@@ -134,11 +177,14 @@ export function TaskSidebar({
         )}
       </div>
 
-      {/* Footer Settings */}
-      <div className="p-3 border-t border-zinc-800 bg-zinc-900/30">
+      {/* Footer Settings & User Profile */}
+      <div className="border-t border-zinc-800 bg-zinc-900/30 p-3 space-y-2">
         <button
           type="button"
-          onClick={onOpenAuth}
+          onClick={() => {
+            onOpenAuth();
+            onClose?.();
+          }}
           className="w-full flex items-center justify-between px-3 py-2 text-xs rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 border border-zinc-800/80 transition-colors cursor-pointer"
         >
           <div className="flex items-center gap-2">
@@ -147,7 +193,58 @@ export function TaskSidebar({
           </div>
           <span className="text-[10px] font-mono text-emerald-400 font-medium">Config</span>
         </button>
+
+        {currentUser && (
+          <div className="pt-2 border-t border-zinc-900 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              {currentUser.avatarUrl ? (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img
+                  src={currentUser.avatarUrl}
+                  alt={currentUser.username}
+                  className="w-6 h-6 rounded-full border border-zinc-800 object-cover shrink-0"
+                />
+              ) : (
+                <div className="w-6 h-6 rounded-full bg-zinc-800 flex items-center justify-center text-[10px] font-mono text-zinc-300 shrink-0">
+                  {currentUser.username[0]?.toUpperCase() || "U"}
+                </div>
+              )}
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-zinc-200 truncate font-mono">
+                  {currentUser.username}
+                </p>
+                <p className="text-[10px] text-zinc-500 truncate">
+                  {currentUser.email}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 shrink-0">
+              {onWalkthrough && (
+                <button
+                  type="button"
+                  onClick={onWalkthrough}
+                  title="Revisit walkthrough"
+                  className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors cursor-pointer"
+                >
+                  <Compass className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {onLogout && (
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  title="Sign out"
+                  className="p-1.5 rounded-md text-zinc-400 hover:text-rose-400 hover:bg-zinc-800 transition-colors cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </aside>
+    </>
   );
 }

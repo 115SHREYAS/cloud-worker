@@ -31,7 +31,7 @@ export function TerminalView({ buffer, onClear, status }: TerminalViewProps) {
       theme: {
         background: "#09090b", // zinc-950
         foreground: "#f4f4f5", // zinc-100
-        cursor: "#22c55e", // emerald-500
+        cursor: "#3b82f6", // blue-500
         cursorAccent: "#09090b",
         selectionBackground: "#3f3f46", // zinc-700
         black: "#18181b",
@@ -162,7 +162,7 @@ export function TerminalView({ buffer, onClear, status }: TerminalViewProps) {
             title="Copy terminal buffer"
             className="p-1.5 rounded hover:bg-zinc-800 hover:text-zinc-200 transition-colors cursor-pointer"
           >
-            {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+            {copied ? <Check className="w-3.5 h-3.5 text-blue-400" /> : <Copy className="w-3.5 h-3.5" />}
           </button>
           <button
             type="button"

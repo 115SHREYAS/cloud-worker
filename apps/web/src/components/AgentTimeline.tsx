@@ -60,7 +60,7 @@ export function AgentTimeline({ events }: AgentTimelineProps) {
             <div key={`status-${idx}`} className="relative flex items-start gap-4">
               <span className="absolute -left-6 mt-1 flex items-center justify-center w-5 h-5 rounded-full bg-zinc-900 border border-zinc-700 text-zinc-300">
                 {event.status === "completed" ? (
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />
                 ) : event.status === "failed" ? (
                   <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
                 ) : event.status === "provisioning" ? (
@@ -131,7 +131,7 @@ export function AgentTimeline({ events }: AgentTimelineProps) {
                     ) : (
                       <ChevronRight className="w-3.5 h-3.5 text-zinc-400" />
                     )}
-                    <span className="text-xs font-mono font-semibold text-emerald-400">
+                    <span className="text-xs font-mono font-semibold text-blue-400">
                       {event.tool}
                     </span>
                     <span className="text-[11px] text-zinc-400 font-mono truncate max-w-sm">
@@ -158,7 +158,7 @@ export function AgentTimeline({ events }: AgentTimelineProps) {
           return (
             <div key={`result-${event.callId}-${idx}`} className="relative flex items-start gap-4">
               <span className="absolute -left-6 mt-1 flex items-center justify-center w-5 h-5 rounded-full bg-zinc-900 border border-zinc-700 text-zinc-400">
-                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                <CheckCircle2 className="w-3 h-3 text-blue-400" />
               </span>
 
               <div className="flex-1 bg-zinc-900/40 border border-zinc-800/60 rounded-lg p-3 font-mono text-xs">
@@ -171,7 +171,7 @@ export function AgentTimeline({ events }: AgentTimelineProps) {
                       <span
                         className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
                           event.exitCode === 0
-                            ? "bg-emerald-950 text-emerald-400"
+                            ? "bg-blue-950 text-blue-400"
                             : "bg-rose-950 text-rose-400"
                         }`}
                       >
@@ -212,13 +212,13 @@ export function AgentTimeline({ events }: AgentTimelineProps) {
         if (event.type === "done") {
           return (
             <div key={`done-${idx}`} className="relative flex items-start gap-4">
-              <span className="absolute -left-6 mt-1 flex items-center justify-center w-5 h-5 rounded-full bg-emerald-950 border border-emerald-700 text-emerald-400">
+              <span className="absolute -left-6 mt-1 flex items-center justify-center w-5 h-5 rounded-full bg-blue-950 border border-blue-700 text-blue-400">
                 <CheckCircle2 className="w-3.5 h-3.5" />
               </span>
 
-              <div className="flex-1 bg-emerald-950/20 border border-emerald-900/40 rounded-lg p-3.5">
+              <div className="flex-1 bg-blue-950/20 border border-blue-900/40 rounded-lg p-3.5">
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-semibold text-emerald-400">Execution complete</span>
+                  <span className="text-xs font-semibold text-blue-400">Execution complete</span>
                   <span className="text-[11px] font-mono text-zinc-500">{timeStr}</span>
                 </div>
                 <p className="text-xs text-zinc-300">
@@ -229,7 +229,7 @@ export function AgentTimeline({ events }: AgentTimelineProps) {
                     href={event.pullRequestUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-block mt-2 text-xs text-emerald-400 underline font-mono hover:text-emerald-300"
+                    className="inline-block mt-2 text-xs text-blue-400 underline font-mono hover:text-blue-300"
                   >
                     View Pull Request
                   </a>
