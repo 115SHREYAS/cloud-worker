@@ -39,6 +39,8 @@ export interface WorkspaceInitResult {
 
 export interface AgentSessionConfig {
   provider?: AgentProvider;
+  model?: string;
+  reasoningEffort?: "none" | "low" | "medium" | "high";
   authJson?: string;
   apiKey?: string;
   githubToken?: string;

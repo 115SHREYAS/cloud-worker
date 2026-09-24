@@ -104,14 +104,48 @@ export class AgentSession {
   private async injectAuth(provider: AgentProvider): Promise<void> {
     if (provider === "codex") {
       if (this.config.authJson) {
-        await this.sandbox.makeDir("/root/.codex");
-        await this.sandbox.writeFile("/root/.codex/auth.json", this.config.authJson);
-        await this.sandbox.exec("chmod 600 /root/.codex/auth.json");
+        const trimmed = this.config.authJson.trim();
+        const content = trimmed.startsWith("{")
+          ? trimmed
+          : JSON.stringify({ token: trimmed, created_at: Date.now() }, null, 2);
+
+        // Inject to /home/user/.codex/auth.json (primary for non-root E2B microVM environment)
+        await this.sandbox.exec("mkdir -p /home/user/.codex");
+        await this.sandbox.writeFile("/home/user/.codex/auth.json", content);
+        await this.sandbox.exec("chmod 700 /home/user/.codex && chmod 600 /home/user/.codex/auth.json");
+
+        // Also inject to /root/.codex/auth.json if writable
+        try {
+          await this.sandbox.exec("mkdir -p /root/.codex");
+          await this.sandbox.writeFile("/root/.codex/auth.json", content);
+          await this.sandbox.exec("chmod 600 /root/.codex/auth.json");
+        } catch {
+          // Ignore if running as non-root user
+        }
       }
     } else if (provider === "claude") {
       if (this.config.authJson) {
-        await this.sandbox.writeFile("/root/.claude.json", this.config.authJson);
-        await this.sandbox.exec("chmod 600 /root/.claude.json");
+        const trimmed = this.config.authJson.trim();
+        let content: string;
+        if (trimmed.startsWith("{")) {
+          content = trimmed;
+        } else {
+          // If an official setup token (e.g. sk-ant-oat01-...) is provided, construct valid claude config
+          const token = trimmed.replace(/^CLAUDE_CODE_OAUTH_TOKEN\s*=\s*/i, "").trim();
+          content = JSON.stringify({ oauthToken: token }, null, 2);
+        }
+
+        // Inject to /home/user/.claude.json (primary for non-root E2B microVM environment)
+        await this.sandbox.writeFile("/home/user/.claude.json", content);
+        await this.sandbox.exec("chmod 600 /home/user/.claude.json");
+
+        // Also inject to /root/.claude.json if writable
+        try {
+          await this.sandbox.writeFile("/root/.claude.json", content);
+          await this.sandbox.exec("chmod 600 /root/.claude.json");
+        } catch {
+          // Ignore if running as non-root user
+        }
       }
     }
   }
@@ -160,11 +194,27 @@ export class AgentSession {
       NON_INTERACTIVE: "1",
     };
 
+    if (provider === "codex") {
+      env.CODEX_HOME = "/home/user/.codex";
+    }
+
     if (this.config.apiKey) {
       if (provider === "codex") {
         env.OPENAI_API_KEY = this.config.apiKey;
       } else {
         env.ANTHROPIC_API_KEY = this.config.apiKey;
+      }
+    }
+
+    // Inject Claude Code OAuth token into environment if provided as single-line token
+    if (provider === "claude") {
+      if (this.config.authJson) {
+        const trimmed = this.config.authJson.trim();
+        if (!trimmed.startsWith("{")) {
+          env.CLAUDE_CODE_OAUTH_TOKEN = trimmed.replace(/^CLAUDE_CODE_OAUTH_TOKEN\s*=\s*/i, "").trim();
+        }
+      } else if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+        env.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
       }
     }
 
@@ -174,15 +224,37 @@ export class AgentSession {
     }
 
     if (provider === "codex") {
-      // Non-interactive codex execution with full-auto approval
+      // Non-interactive codex execution skipping confirmation prompts in the microVM
+      const flags: string[] = ["--dangerously-bypass-approvals-and-sandbox"];
+
+      if (this.config.model && this.config.model !== "codex" && this.config.model !== "claude") {
+        flags.push(`-m "${this.config.model}"`);
+      }
+
+      if (this.config.reasoningEffort && this.config.reasoningEffort !== "none") {
+        flags.push(`-c 'model_reasoning_effort="${this.config.reasoningEffort}"'`);
+      }
+
       return {
-        command: `codex exec --full-auto "$(cat "${promptFilePath}")"`,
+        command: `codex exec ${flags.join(" ")} -- "$(cat "${promptFilePath}")"`,
         env,
       };
     } else {
       // Headless claude code execution skipping interactive permission prompts
+      const flags: string[] = ["--dangerously-skip-permissions"];
+
+      if (this.config.model && this.config.model !== "claude" && this.config.model !== "codex") {
+        flags.push(`--model "${this.config.model}"`);
+      }
+
+      if (this.config.reasoningEffort && this.config.reasoningEffort !== "none") {
+        const budgetMap = { low: 2048, medium: 8192, high: 32000 };
+        const budget = budgetMap[this.config.reasoningEffort as "low" | "medium" | "high"] || 8192;
+        env.MAX_THINKING_TOKENS = String(budget);
+      }
+
       return {
-        command: `claude -p "$(cat "${promptFilePath}")" --dangerously-skip-permissions`,
+        command: `claude -p "$(cat "${promptFilePath}")" ${flags.join(" ")}`,
         env,
       };
     }
@@ -220,12 +292,21 @@ export class AgentSession {
   }
 
   private async captureRefreshedAuth(provider: AgentProvider): Promise<string | undefined> {
-    const authPath = provider === "codex" ? "/root/.codex/auth.json" : "/root/.claude.json";
-    try {
-      const content = await this.sandbox.readFile(authPath);
-      return content.trim() ? content : undefined;
-    } catch {
-      return undefined;
+    const candidatePaths =
+      provider === "codex"
+        ? ["/home/user/.codex/auth.json", "/root/.codex/auth.json"]
+        : ["/home/user/.claude.json", "/root/.claude.json"];
+
+    for (const authPath of candidatePaths) {
+      try {
+        const content = await this.sandbox.readFile(authPath);
+        if (content.trim()) {
+          return content;
+        }
+      } catch {
+        // Try next candidate path
+      }
     }
+    return undefined;
   }
 }
