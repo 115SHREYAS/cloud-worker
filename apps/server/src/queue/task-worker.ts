@@ -4,6 +4,9 @@ import type { StreamEvent, TaskStatus, TokenUsage } from "@cloud-worker/shared";
 import { SandboxManager, AgentSession, initWorkspace, type AgentProvider } from "@cloud-worker/sandbox";
 import type { GitHubTokenManager } from "../github/token-manager.ts";
 import { createPullRequest, formatPullRequestBody } from "../github/pull-request.ts";
+import fs from "fs/promises";
+import { existsSync } from "fs";
+import { join } from "path";
 
 function estimateTokenUsage(stdout: string, stderr: string, prompt: string): TokenUsage {
   const combined = `${stdout}\n${stderr}`;
@@ -96,7 +99,25 @@ export class TaskWorker {
 
       // 2. Determine agent provider and credentials
       const provider = this.resolveProvider(task.model);
-      const { authJson, apiKey } = await this.resolveCredentials(provider);
+      const { authJson, apiKey } = await this.resolveCredentials(provider, task.userId);
+      if (!authJson && !apiKey) {
+        const errorMsg =
+          `No valid authentication credentials found for ${provider === "codex" ? "OpenAI Codex" : "Claude Code"}. ` +
+          `Please connect your ChatGPT or Claude subscription in settings or configure an API key.`;
+        await this.repo.updateTask(taskId, {
+          status: "failed",
+          error: errorMsg,
+          completedAt: new Date().toISOString(),
+        });
+        await this.updateStatus(taskId, "failed", errorMsg);
+        await this.emitAndLog({
+          type: "error",
+          taskId,
+          message: errorMsg,
+          timestamp: Date.now(),
+        });
+        return;
+      }
 
       // 3. Provision isolated microVM
       const e2bApiKey = this.e2bApiKey || process.env.E2B_API_KEY;
@@ -156,6 +177,8 @@ export class TaskWorker {
 
       const session = AgentSession.create(sandbox, {
         provider,
+        model: task.model,
+        reasoningEffort: task.reasoningEffort,
         authJson,
         apiKey,
         workingBranch: task.workingBranch,
@@ -445,14 +468,29 @@ export class TaskWorker {
 
   private async resolveCredentials(
     provider: AgentProvider,
+    userId?: string,
   ): Promise<{ authJson?: string; apiKey?: string }> {
-    // 1. Check stored auth session in database
-    const storedAuth = await this.repo.getAuthSession(provider);
-    if (storedAuth) {
-      return { authJson: storedAuth };
+    // 1. Check stored auth session for the specific user in database
+    if (userId) {
+      const userRecord = await this.repo.getAuthSessionRecord(provider, userId);
+      if (userRecord) {
+        if (userRecord.authMode === "api_key") {
+          return { apiKey: userRecord.authJson };
+        }
+        return { authJson: userRecord.authJson };
+      }
     }
 
-    // 2. Check environment variables
+    // 2. Check default stored auth session in database
+    const storedRecord = await this.repo.getAuthSessionRecord(provider, "default");
+    if (storedRecord) {
+      if (storedRecord.authMode === "api_key") {
+        return { apiKey: storedRecord.authJson };
+      }
+      return { authJson: storedRecord.authJson };
+    }
+
+    // 3. Fallback to server environment variables
     if (provider === "codex") {
       if (process.env.CODEX_AUTH_JSON) {
         return { authJson: process.env.CODEX_AUTH_JSON };
@@ -461,12 +499,34 @@ export class TaskWorker {
         return { apiKey: process.env.OPENAI_API_KEY };
       }
     } else {
+      if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+        return { authJson: process.env.CLAUDE_CODE_OAUTH_TOKEN };
+      }
       if (process.env.CLAUDE_AUTH_JSON) {
         return { authJson: process.env.CLAUDE_AUTH_JSON };
       }
       if (process.env.ANTHROPIC_API_KEY) {
         return { apiKey: process.env.ANTHROPIC_API_KEY };
       }
+    }
+
+    // 4. Fallback to host detected credentials if in local development
+    try {
+      const homeDir = process.env.USERPROFILE || process.env.HOME || "";
+      const hostFilePath =
+        provider === "codex"
+          ? join(homeDir, ".codex", "auth.json")
+          : join(homeDir, ".claude.json");
+
+      if (existsSync(hostFilePath)) {
+        const hostAuth = await fs.readFile(hostFilePath, "utf8");
+        if (hostAuth.trim().length > 0) {
+          await this.repo.saveAuthSession(provider, hostAuth, userId || "default", "subscription");
+          return { authJson: hostAuth };
+        }
+      }
+    } catch (err) {
+      console.warn(`[task-worker] Failed to load local host credentials for ${provider}:`, err);
     }
 
     return {};

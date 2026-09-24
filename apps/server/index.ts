@@ -1,9 +1,10 @@
+import { loadConfig } from "./src/config/env.ts";
 import { createTaskRepository } from "./src/db/index.ts";
 import { createEventBus } from "./src/events/index.ts";
 import { TaskWorker, createTaskQueue, SandboxScavenger } from "./src/queue/index.ts";
 import { createServer } from "./src/server.ts";
-import { GitHubTokenManager } from "./src/github/index.ts";
-import { loadConfig } from "./src/config/env.ts";
+import { GitHubTokenManager, syncGitHubInstallations } from "./src/github/index.ts";
+import { providerAuthRelay } from "./src/auth/provider-auth-relay.ts";
 
 async function bootstrap() {
   console.log("Starting Cloud Worker Control Plane...");
@@ -14,6 +15,19 @@ async function bootstrap() {
   // 2. Initialize database layer (PostgreSQL or Memory fallback)
   const repo = await createTaskRepository(config.DATABASE_URL);
 
+  // Auto-detect and import local host credentials for zero-config operation
+  try {
+    const detected = await providerAuthRelay.detectLocalCredentials();
+    for (const d of detected) {
+      if (d.available) {
+        await providerAuthRelay.importLocalCredentials(repo, d.provider, "default");
+        console.log(`[auth] Auto-imported local host credentials for ${d.provider} (${d.planName || d.provider})`);
+      }
+    }
+  } catch (err) {
+    console.warn("[auth] Host credential auto-import failed on startup:", err);
+  }
+
   // 3. Initialize real-time event bus (Redis Pub/Sub or Memory fallback)
   const eventBus = await createEventBus(config.REDIS_URL);
 
@@ -21,6 +35,9 @@ async function bootstrap() {
   const tokenManager = new GitHubTokenManager();
   if (tokenManager.isConfigured()) {
     console.log(`[github] GitHub App configured (App ID: ${tokenManager.getAppId()})`);
+    syncGitHubInstallations(repo, tokenManager).catch((err) => {
+      console.warn("[github] Startup installation sync failed:", err);
+    });
   } else {
     console.log("[github] GitHub App not configured. Running in token fallback / demo mode.");
   }

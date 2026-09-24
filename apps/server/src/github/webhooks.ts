@@ -66,6 +66,14 @@ export async function handleGitHubWebhook(
           updatedAt: inst.updated_at || new Date().toISOString(),
         };
         await repository.saveInstallation(record);
+
+        if (inst.account?.id) {
+          const user = await repository.getUserByGitHubId(inst.account.id);
+          if (user) {
+            await repository.linkUserInstallation(user.id, inst.id);
+          }
+        }
+
         return { handled: true, action: "installation.created", message: `Saved installation ${inst.id}` };
       }
 

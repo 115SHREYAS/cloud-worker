@@ -45,8 +45,13 @@ describe("GitHub App Integration (Phase 5)", () => {
   });
 
   it("manages token manager lifecycle and caching", async () => {
+    const originalAppId = process.env.GITHUB_APP_ID;
+    delete process.env.GITHUB_APP_ID;
     const manager = new GitHubTokenManager();
     expect(manager.isConfigured()).toBe(false);
+    if (originalAppId) {
+      process.env.GITHUB_APP_ID = originalAppId;
+    }
 
     // In environment where GITHUB_TOKEN might be set or not
     if (process.env.GITHUB_TOKEN) {
