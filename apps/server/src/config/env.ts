@@ -1,4 +1,33 @@
 import { z } from "zod";
+import path from "node:path";
+import fs from "node:fs";
+
+function loadEnvFiles() {
+  const candidateDirs = [
+    process.cwd(),
+    path.resolve(process.cwd(), ".."),
+    path.resolve(process.cwd(), "../.."),
+    import.meta.dir,
+    path.resolve(import.meta.dir, ".."),
+    path.resolve(import.meta.dir, "../.."),
+    path.resolve(import.meta.dir, "../../.."),
+  ];
+
+  for (const dir of candidateDirs) {
+    const envFile = path.join(dir, ".env");
+    if (fs.existsSync(envFile)) {
+      try {
+        if (typeof process.loadEnvFile === "function") {
+          process.loadEnvFile(envFile);
+        }
+      } catch {
+        // Continue searching
+      }
+    }
+  }
+}
+
+loadEnvFiles();
 
 export const EnvironmentSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -10,6 +39,11 @@ export const EnvironmentSchema = z.object({
   GITHUB_APP_PRIVATE_KEY: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
   GITHUB_TOKEN: z.string().optional(),
+  GITHUB_CLIENT_ID: z.string().optional(),
+  GITHUB_CLIENT_SECRET: z.string().optional(),
+  GITHUB_APP_SLUG: z.string().optional(),
+  SESSION_SECRET: z.string().optional(),
+  ENCRYPTION_KEY: z.string().optional(),
   CODEX_AUTH_JSON: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   CLAUDE_AUTH_JSON: z.string().optional(),
