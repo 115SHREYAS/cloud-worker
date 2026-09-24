@@ -5,6 +5,9 @@ import {
   StreamEventSchema,
   getTaskChannel,
   AGENT_TOOLS,
+  UserSchema,
+  SaveCredentialsInputSchema,
+  UserSettingsSchema,
 } from "./index";
 
 describe("Domain contracts (@cloud-worker/shared)", () => {
@@ -123,6 +126,53 @@ describe("Domain contracts (@cloud-worker/shared)", () => {
       state: "open",
     });
     expect(prResult.pullRequestNumber).toBe(42);
+  });
+
+  it("validates user profile, credentials, and settings contracts", () => {
+    const user = UserSchema.parse({
+      id: "usr_123",
+      githubId: 12345678,
+      username: "octocat",
+      email: "octocat@github.com",
+      avatarUrl: "https://avatars.githubusercontent.com/u/12345678",
+      defaultModel: "codex",
+      defaultAuthMode: "subscription",
+      onboardingCompleted: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    expect(user.username).toBe("octocat");
+    expect(user.onboardingCompleted).toBe(false);
+
+    const creds = SaveCredentialsInputSchema.parse({
+      provider: "codex",
+      authMode: "subscription",
+      credential: '{"tokens":{"access_token":"token"}}',
+    });
+    expect(creds.provider).toBe("codex");
+
+    const settings = UserSettingsSchema.parse({
+      user: {
+        id: user.id,
+        githubId: user.githubId,
+        username: user.username,
+        email: user.email,
+        avatarUrl: user.avatarUrl,
+        defaultModel: user.defaultModel,
+        defaultAuthMode: user.defaultAuthMode,
+        onboardingCompleted: user.onboardingCompleted,
+      },
+      configuredProviders: [
+        {
+          provider: "codex",
+          authMode: "subscription",
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+      linkedInstallationsCount: 1,
+    });
+    expect(settings.configuredProviders.length).toBe(1);
+    expect(settings.linkedInstallationsCount).toBe(1);
   });
 });
 
