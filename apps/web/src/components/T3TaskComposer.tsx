@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   AVAILABLE_MODELS,
+  getAvailableModels,
   type CreateTaskInput,
   type ReasoningEffort,
   type ModelOption,
@@ -10,6 +11,7 @@ import {
 import {
   fetchGitHubBranches,
   fetchAvailableModels,
+  fetchAuthStatus,
   type GitHubBranch,
 } from "../lib/api";
 import {
@@ -22,12 +24,7 @@ import {
   Check,
   Search,
   Loader2,
-  Sparkles,
-  Bot,
-  RefreshCw,
   ArrowRight,
-  Globe,
-  SlidersHorizontal,
 } from "lucide-react";
 
 export interface InstalledRepoItem {
@@ -75,6 +72,7 @@ function ClaudeIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   );
 }
 
+
 const PROMPT_CHIPS = [
   "Add a health check endpoint and test suite",
   "Refactor database queries for performance",
@@ -99,21 +97,30 @@ export function T3TaskComposer({
   const [harness, setHarness] = useState<"codex" | "claude">(() => {
     return defaultModel.toLowerCase().includes("claude") ? "claude" : "codex";
   });
+  const [harnessAuthMode, setHarnessAuthMode] = useState<"subscription" | "api_key">(() => {
+    return defaultAuthMode === "api_key" ? "api_key" : "subscription";
+  });
   const [harnessModels, setHarnessModels] = useState<ModelOption[]>(() => {
-    return AVAILABLE_MODELS.filter((m) =>
-      defaultModel.toLowerCase().includes("claude")
-        ? m.provider === "claude"
-        : m.provider === "codex",
-    );
+    const isApi = defaultAuthMode === "api_key";
+    const initialProvider = defaultModel.toLowerCase().includes("claude") ? "claude" : "codex";
+    return getAvailableModels(initialProvider, isApi);
   });
   const [selectedModelId, setSelectedModelId] = useState<string>(() => {
-    const initial = AVAILABLE_MODELS.find((m) => m.id === defaultModel);
-    if (initial) return initial.id;
-    return defaultModel.toLowerCase().includes("claude")
-      ? "claude-3-7-sonnet-20250219"
-      : "codex";
+    const isApi = defaultAuthMode === "api_key";
+    const initialProvider = defaultModel.toLowerCase().includes("claude") ? "claude" : "codex";
+    const available = getAvailableModels(initialProvider, isApi);
+    const found = available.find((m) => m.id === defaultModel);
+    if (found) return found.id;
+    return available[0]?.id || (initialProvider === "claude" ? "claude-3-7-sonnet-20250219" : "codex");
   });
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
+
+  // Keep harnessAuthMode in sync if defaultAuthMode prop updates
+  useEffect(() => {
+    if (defaultAuthMode) {
+      setHarnessAuthMode(defaultAuthMode === "api_key" ? "api_key" : "subscription");
+    }
+  }, [defaultAuthMode]);
 
   // Real Branches state
   const [branches, setBranches] = useState<GitHubBranch[]>([]);
@@ -138,12 +145,18 @@ export function T3TaskComposer({
   const effortDropdownRef = useRef<HTMLDivElement>(null);
   const branchDropdownRef = useRef<HTMLDivElement>(null);
 
-  // Fetch models whenever harness changes
+  // Fetch models whenever harness or defaultAuthMode changes
   useEffect(() => {
     let ignore = false;
     async function loadModels() {
       try {
-        const fetched = await fetchAvailableModels(harness);
+        const authStatus = await fetchAuthStatus(harness).catch(() => null);
+        const currentMode = authStatus?.authMode || (defaultAuthMode === "api_key" ? "api_key" : "subscription");
+        if (!ignore && authStatus?.authMode) {
+          setHarnessAuthMode(authStatus.authMode);
+        }
+
+        const fetched = await fetchAvailableModels(harness, currentMode);
         if (!ignore && fetched.length > 0) {
           setHarnessModels(fetched);
           // If current model not in fetched harness models, pick the first
@@ -154,15 +167,17 @@ export function T3TaskComposer({
             }
           }
         } else if (!ignore) {
-          const fallback = AVAILABLE_MODELS.filter((m) => m.provider === harness);
+          const hasApiKey = currentMode === "api_key";
+          const fallback = getAvailableModels(harness, hasApiKey);
           setHarnessModels(fallback);
           if (!fallback.some((m) => m.id === selectedModelId)) {
-            setSelectedModelId(fallback[0].id);
+            setSelectedModelId(fallback[0]?.id || (harness === "claude" ? "claude-3-7-sonnet-20250219" : "codex"));
           }
         }
       } catch {
         if (!ignore) {
-          const fallback = AVAILABLE_MODELS.filter((m) => m.provider === harness);
+          const hasApiKey = harnessAuthMode === "api_key";
+          const fallback = getAvailableModels(harness, hasApiKey);
           setHarnessModels(fallback);
         }
       }
@@ -171,7 +186,7 @@ export function T3TaskComposer({
     return () => {
       ignore = true;
     };
-  }, [harness, selectedModelId]);
+  }, [harness, defaultAuthMode]);
 
   // Fetch real branches from GitHub whenever selectedRepo changes
   useEffect(() => {
@@ -302,9 +317,11 @@ export function T3TaskComposer({
     setHarness(newHarness);
     setIsHarnessDropdownOpen(false);
 
-    // Pick first model for this harness
-    const newModels = AVAILABLE_MODELS.filter((m) => m.provider === newHarness);
+    // Pick first available model for this harness
+    const hasApiKey = harnessAuthMode === "api_key";
+    const newModels = getAvailableModels(newHarness, hasApiKey);
     if (newModels.length > 0) {
+      setHarnessModels(newModels);
       setSelectedModelId(newModels[0].id);
       if (newModels[0].defaultEffort) {
         setReasoningEffort(newModels[0].defaultEffort);

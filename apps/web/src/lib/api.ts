@@ -67,7 +67,7 @@ export async function fetchTaskLogs(id: string): Promise<StreamEvent[]> {
 
 export async function fetchAuthStatus(
   provider: "codex" | "claude",
-): Promise<{ provider: string; configured: boolean }> {
+): Promise<{ provider: string; configured: boolean; authMode?: "subscription" | "api_key" }> {
   const res = await fetch(`${API_BASE}/api/auth/session/${provider}`);
   if (!res.ok) {
     throw new Error(`Failed to fetch auth status for ${provider}`);
@@ -313,11 +313,14 @@ export async function cancelProviderLoginFlow(flowId: string): Promise<{ ok: boo
 
 export async function fetchAvailableModels(
   harness?: "codex" | "claude",
+  authMode?: "subscription" | "api_key",
 ): Promise<ModelOption[]> {
   try {
-    const url = harness
-      ? `${API_BASE}/api/models?harness=${harness}`
-      : `${API_BASE}/api/models`;
+    const params = new URLSearchParams();
+    if (harness) params.set("harness", harness);
+    if (authMode) params.set("authMode", authMode);
+    const query = params.toString();
+    const url = query ? `${API_BASE}/api/models?${query}` : `${API_BASE}/api/models`;
     const res = await fetch(url);
     if (!res.ok) {
       return [];

@@ -33,25 +33,63 @@ export interface ModelOption {
   supportsReasoning: boolean;
   defaultEffort?: ReasoningEffort;
   badge?: string;
+  requiresApiKey?: boolean;
 }
 
 export const AVAILABLE_MODELS: ModelOption[] = [
   // OpenAI Codex models
+  {
+    id: "gpt-6-luna",
+    name: "GPT-6-Luna",
+    provider: "codex",
+    description: "Frontier model for code and deep thought (ChatGPT Subscription)",
+    supportsReasoning: true,
+    defaultEffort: "medium",
+    requiresApiKey: false,
+  },
+  {
+    id: "gpt-5.6-luna",
+    name: "GPT-5.6-Luna",
+    provider: "codex",
+    description: "Smart, efficient, and versatile frontier model for code and deep thought (ChatGPT Subscription)",
+    supportsReasoning: true,
+    defaultEffort: "medium",
+    requiresApiKey: false,
+  },
+  {
+    id: "gpt-5.6-terra",
+    name: "GPT-5.6-Terra",
+    provider: "codex",
+    description: "Balanced model for straightforward programming work (ChatGPT Subscription)",
+    supportsReasoning: true,
+    defaultEffort: "medium",
+    requiresApiKey: false,
+  },
+  {
+    id: "gpt-5.5",
+    name: "GPT-5.5",
+    provider: "codex",
+    description: "Fast coding model for iterations and bugfixes (ChatGPT Subscription)",
+    supportsReasoning: true,
+    defaultEffort: "medium",
+    requiresApiKey: false,
+  },
   {
     id: "codex",
     name: "OpenAI Codex Default",
     provider: "codex",
     description: "Standard autonomous harness using your ChatGPT Plus/Pro subscription or default CLI model",
     supportsReasoning: false,
-    badge: "ChatGPT Sub",
+    requiresApiKey: false,
   },
   {
     id: "gpt-4o",
     name: "GPT-4o",
     provider: "codex",
-    description: "Versatile, fast multi-modal foundation model (ChatGPT Sub & API)",
+    description: "Versatile foundation model for vision and code (Requires OpenAI API Key)",
     supportsReasoning: false,
-    badge: "Popular",
+    badge: "API Key",
+    requiresApiKey: true,
   },
   {
     id: "o3-mini",
@@ -61,6 +99,7 @@ export const AVAILABLE_MODELS: ModelOption[] = [
     supportsReasoning: true,
     defaultEffort: "medium",
     badge: "API Key",
+    requiresApiKey: true,
   },
   {
     id: "o3",
@@ -70,6 +109,7 @@ export const AVAILABLE_MODELS: ModelOption[] = [
     supportsReasoning: true,
     defaultEffort: "high",
     badge: "API Key",
+    requiresApiKey: true,
   },
   {
     id: "o1",
@@ -79,6 +119,7 @@ export const AVAILABLE_MODELS: ModelOption[] = [
     supportsReasoning: true,
     defaultEffort: "medium",
     badge: "API Key",
+    requiresApiKey: true,
   },
   {
     id: "gpt-4.5-preview",
@@ -87,6 +128,7 @@ export const AVAILABLE_MODELS: ModelOption[] = [
     description: "Massive world knowledge and precision instruction following (Requires OpenAI API Key)",
     supportsReasoning: false,
     badge: "API Key",
+    requiresApiKey: true,
   },
   {
     id: "gpt-4o-mini",
@@ -95,16 +137,17 @@ export const AVAILABLE_MODELS: ModelOption[] = [
     description: "Lightweight, ultra-fast model for small script changes (Requires OpenAI API Key)",
     supportsReasoning: false,
     badge: "API Key",
+    requiresApiKey: true,
   },
   // Claude Code models
   {
     id: "claude-3-7-sonnet-20250219",
     name: "Claude 3.7 Sonnet",
     provider: "claude",
-    description: "Hybrid reasoning flagship with extended thinking budget (Claude Pro/Team & API)",
+    description: "Hybrid reasoning model with extended thinking budget (Claude Pro/Team & API)",
     supportsReasoning: true,
     defaultEffort: "medium",
-    badge: "Flagship",
+    requiresApiKey: false,
   },
   {
     id: "claude-3-5-sonnet-20241022",
@@ -112,6 +155,7 @@ export const AVAILABLE_MODELS: ModelOption[] = [
     provider: "claude",
     description: "Industry standard for full-stack codebase engineering (Claude Pro/Team & API)",
     supportsReasoning: false,
+    requiresApiKey: false,
   },
   {
     id: "claude-3-5-haiku-20241022",
@@ -119,15 +163,36 @@ export const AVAILABLE_MODELS: ModelOption[] = [
     provider: "claude",
     description: "Ultra-fast code iteration and concise refactors (Claude Pro/Team & API)",
     supportsReasoning: false,
+    requiresApiKey: false,
   },
   {
     id: "claude-3-opus-20240229",
     name: "Claude 3 Opus",
     provider: "claude",
-    description: "Deep analytical reasoning across large workspaces (Claude Pro/Team & API)",
+    description: "Deep analytical reasoning across large workspaces (Requires Anthropic API Key)",
     supportsReasoning: false,
+    badge: "API Key",
+    requiresApiKey: true,
   },
 ];
+
+export function getSubscriptionModels(provider?: "codex" | "claude"): ModelOption[] {
+  return AVAILABLE_MODELS.filter((m) => {
+    if (provider && m.provider !== provider) return false;
+    return !m.requiresApiKey;
+  });
+}
+
+export function getAvailableModels(
+  provider?: "codex" | "claude",
+  hasApiKey = false,
+): ModelOption[] {
+  return AVAILABLE_MODELS.filter((m) => {
+    if (provider && m.provider !== provider) return false;
+    if (!hasApiKey && m.requiresApiKey) return false;
+    return true;
+  });
+}
 
 export const CreateTaskInputSchema = z.object({
   repo: RepoRefSchema,

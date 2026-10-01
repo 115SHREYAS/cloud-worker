@@ -766,16 +766,24 @@ export function createServer(options: ServerOptions) {
           }
 
           const targetUserId = session?.sub ?? "default";
-          const hasDbSession =
-            (await repo.hasAuthSession(provider as AgentProvider, targetUserId)) ||
-            (targetUserId !== "default" && (await repo.hasAuthSession(provider as AgentProvider, "default")));
+          const dbRecord =
+            (await repo.getAuthSessionRecord(provider as AgentProvider, targetUserId)) ||
+            (targetUserId !== "default" ? await repo.getAuthSessionRecord(provider as AgentProvider, "default") : null);
+          const hasDbSession = dbRecord !== null && dbRecord.authJson.trim().length > 0;
           const hasEnvSession =
             provider === "codex"
               ? Boolean(process.env.CODEX_AUTH_JSON || process.env.OPENAI_API_KEY)
               : Boolean(process.env.CLAUDE_AUTH_JSON || process.env.ANTHROPIC_API_KEY);
 
+          const hasApiKey =
+            dbRecord?.authMode === "api_key" ||
+            (provider === "codex" && Boolean(process.env.OPENAI_API_KEY)) ||
+            (provider === "claude" && Boolean(process.env.ANTHROPIC_API_KEY));
+
+          const authMode = hasApiKey ? "api_key" : (dbRecord?.authMode || "subscription");
+
           return Response.json(
-            { provider, configured: hasDbSession || hasEnvSession },
+            { provider, configured: hasDbSession || hasEnvSession, authMode },
             { headers: CORS_HEADERS },
           );
         }
@@ -1117,10 +1125,48 @@ export function createServer(options: ServerOptions) {
 
         // List models filtered by agent harness
         if (path === "/api/models" && method === "GET") {
-          const harness = url.searchParams.get("harness");
-          const models = harness
+          const harness = url.searchParams.get("harness") as "codex" | "claude" | null;
+          const authModeParam = url.searchParams.get("authMode");
+          const targetUserId = session?.sub ?? "default";
+
+          // Check if an API key is provided by the user for this harness
+          let hasApiKey = authModeParam === "api_key";
+          if (!hasApiKey && harness) {
+            const dbRecord =
+              (await repo.getAuthSessionRecord(harness, targetUserId)) ||
+              (targetUserId !== "default" ? await repo.getAuthSessionRecord(harness, "default") : null);
+            if (dbRecord?.authMode === "api_key") {
+              hasApiKey = true;
+            } else if (harness === "codex" && Boolean(process.env.OPENAI_API_KEY)) {
+              hasApiKey = true;
+            } else if (harness === "claude" && Boolean(process.env.ANTHROPIC_API_KEY)) {
+              hasApiKey = true;
+            }
+          }
+
+          let models = harness
             ? AVAILABLE_MODELS.filter((m) => m.provider === harness)
             : AVAILABLE_MODELS;
+
+          // If querying codex harness or all models, dynamically prepend detected subscription models
+          if (!harness || harness === "codex") {
+            try {
+              const detectedCodexModels = providerAuthRelay.getAvailableCodexModels();
+              if (detectedCodexModels.length > 0) {
+                const detectedIds = new Set(detectedCodexModels.map((m) => m.id));
+                const remaining = models.filter((m) => !detectedIds.has(m.id));
+                models = [...detectedCodexModels, ...remaining];
+              }
+            } catch {
+              // Ignore detection failure
+            }
+          }
+
+          // If no API key is provided, remove API models and only show subscription models
+          if (!hasApiKey) {
+            models = models.filter((m) => !m.requiresApiKey);
+          }
+
           return Response.json({ models }, { headers: CORS_HEADERS });
         }
 

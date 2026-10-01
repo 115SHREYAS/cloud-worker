@@ -86,6 +86,14 @@ async function bootstrap() {
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  process.on("unhandledRejection", (reason) => {
+    console.error("[server] Unhandled Promise Rejection:", reason);
+  });
+
+  process.on("uncaughtException", (err) => {
+    console.error("[server] Uncaught Exception:", err);
+  });
 }
 
 bootstrap().catch((err) => {

@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { TaskRepository } from "../db/repository.ts";
 import type { AgentProvider } from "@cloud-worker/sandbox";
+import type { ModelOption, ReasoningEffort } from "@cloud-worker/shared";
 
 export interface DetectedProviderAuth {
   provider: AgentProvider;
@@ -115,6 +116,50 @@ class ProviderAuthRelay {
     }
 
     return results;
+  }
+
+  /**
+   * Reads available models dynamically from local Codex CLI cache if present on the host.
+   */
+  public getAvailableCodexModels(): ModelOption[] {
+    const cachePath = join(homedir(), ".codex", "models_cache.json");
+    if (!existsSync(cachePath)) {
+      return [];
+    }
+
+    try {
+      const raw = readFileSync(cachePath, "utf8");
+      const data = JSON.parse(raw);
+      if (!data || !Array.isArray(data.models)) {
+        return [];
+      }
+
+      const listable = data.models.filter(
+        (m: { visibility?: string }) => m.visibility !== "hide"
+      );
+
+      return listable.map(
+        (m: {
+          slug: string;
+          display_name: string;
+          description?: string;
+          supported_reasoning_levels?: Array<{ effort: string }>;
+          default_reasoning_level?: string;
+        }) => ({
+          id: m.slug,
+          name: m.display_name,
+          provider: "codex" as const,
+          description: m.description || `${m.display_name} model from Codex subscription`,
+          supportsReasoning: Boolean(
+            m.supported_reasoning_levels && m.supported_reasoning_levels.length > 0
+          ),
+          defaultEffort: (m.default_reasoning_level as ReasoningEffort) || "medium",
+          requiresApiKey: false,
+        })
+      );
+    } catch {
+      return [];
+    }
   }
 
   /**

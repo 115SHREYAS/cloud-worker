@@ -55,8 +55,8 @@ export function TaskCreationModal({ isOpen, onClose, onTaskCreated }: TaskCreati
   };
 
   const selectedModelObj = AVAILABLE_MODELS.find((m) => m.id === model);
-  const codexModels = AVAILABLE_MODELS.filter((m) => m.provider === "codex");
-  const claudeModels = AVAILABLE_MODELS.filter((m) => m.provider === "claude");
+  const codexModels = AVAILABLE_MODELS.filter((m) => m.provider === "codex" && !m.requiresApiKey);
+  const claudeModels = AVAILABLE_MODELS.filter((m) => m.provider === "claude" && !m.requiresApiKey);
 
   useEffect(() => {
     if (!isOpen) return;
