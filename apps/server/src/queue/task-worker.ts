@@ -232,24 +232,53 @@ export class TaskWorker {
       }
 
       if (result.exitCode === 0) {
-        // Commit any uncommitted edits safely via commit message file to prevent shell injection
-        const commitMsg = `feat(agent): ${task.prompt.slice(0, 60).replace(/\r?\n/g, " ")}`;
-        await sandbox.writeFile("/tmp/.commit_msg.txt", commitMsg);
-        await sandbox.exec(
-          "git add -A && git diff-index --quiet HEAD || git commit -F /tmp/.commit_msg.txt",
-          { cwd: "/workspace" },
-        );
+        // Stage all changes (including newly created/untracked files like README.md)
+        await sandbox.exec("git add -A", { cwd: "/workspace" });
 
-        const finalDiff = (await sandbox.gitDiff()) || result.diff || undefined;
+        // Commit if there are staged differences
+        const stagedCheck = await sandbox.exec("git diff --cached --quiet", { cwd: "/workspace" });
+        if (stagedCheck.exitCode !== 0) {
+          const commitMsg = `feat(agent): ${task.prompt.slice(0, 60).replace(/\r?\n/g, " ")}`;
+          await sandbox.writeFile("/tmp/.commit_msg.txt", commitMsg);
+          await sandbox.exec("git commit -F /tmp/.commit_msg.txt", { cwd: "/workspace" });
+        }
+
+        const baseBranch = task.repo.branch || "main";
+        let finalDiff: string | undefined;
+
+        // 1. Capture full diff against the base branch
+        const branchDiffResult = await sandbox.exec(`git diff "${baseBranch}...HEAD"`, { cwd: "/workspace" });
+        if (branchDiffResult.exitCode === 0 && branchDiffResult.stdout.trim().length > 0) {
+          finalDiff = branchDiffResult.stdout;
+        } else {
+          // 2. Fallback to previous commit diff or agent session diff
+          const headDiffResult = await sandbox.exec("git diff HEAD~1", { cwd: "/workspace" });
+          if (headDiffResult.exitCode === 0 && headDiffResult.stdout.trim().length > 0) {
+            finalDiff = headDiffResult.stdout;
+          } else if (result.diff && result.diff.trim().length > 0) {
+            finalDiff = result.diff;
+          }
+        }
+
+        // Check if new commits exist on the working branch
+        const revCountResult = await sandbox.exec(`git rev-list --count "${baseBranch}..HEAD"`, { cwd: "/workspace" });
+        const newCommitsCount = parseInt(revCountResult.stdout.trim(), 10) || 0;
+
         if (finalDiff) {
           await this.repo.updateTask(taskId, { diff: finalDiff });
+          await this.emitAndLog({
+            type: "diff",
+            taskId,
+            diff: finalDiff,
+            timestamp: Date.now(),
+          });
         }
 
         let pullRequestUrl: string | undefined;
 
         // Push working branch and open pull request if authenticated and changes exist
         const hasAuth = Boolean(task.repo.installationId || process.env.GITHUB_TOKEN);
-        const hasDiff = Boolean(finalDiff && finalDiff.trim().length > 0);
+        const hasDiff = Boolean((finalDiff && finalDiff.trim().length > 0) || newCommitsCount > 0);
 
         if (hasAuth && hasDiff) {
           try {
@@ -287,7 +316,7 @@ export class TaskWorker {
                 owner: task.repo.owner,
                 repo: task.repo.repo,
                 branch: task.workingBranch,
-                baseBranch: task.repo.branch || "main",
+                baseBranch,
                 title: `feat(agent): ${task.prompt.slice(0, 60).replace(/\n/g, " ")}`,
                 body: formatPullRequestBody({
                   taskId: task.id,
@@ -299,12 +328,36 @@ export class TaskWorker {
                 tokenManager: this.tokenManager,
               });
               pullRequestUrl = pr.pullRequestUrl;
+              await this.repo.updateTask(taskId, { pullRequestUrl });
+              await this.emitAndLog({
+                type: "status",
+                taskId,
+                status: "running",
+                message: `Opened Pull Request: ${pr.pullRequestUrl}`,
+                timestamp: Date.now(),
+              });
             } else {
               console.warn(`[task-worker] Branch push exited with code ${pushResult.exitCode}: ${pushResult.stderr}`);
+              await this.emitAndLog({
+                type: "status",
+                taskId,
+                status: "running",
+                message: `Branch push warning: ${pushResult.stderr || "non-zero exit code"}`,
+                timestamp: Date.now(),
+              });
             }
           } catch (prErr) {
             console.warn(`[task-worker] Push or PR creation failed for ${taskId}:`, prErr);
+            await this.emitAndLog({
+              type: "status",
+              taskId,
+              status: "running",
+              message: `PR creation notice: ${prErr instanceof Error ? prErr.message : String(prErr)}`,
+              timestamp: Date.now(),
+            });
           }
+        } else if (!hasDiff) {
+          console.log(`[task-worker] No diff detected between ${baseBranch} and ${task.workingBranch}`);
         }
 
         const tokenUsage = estimateTokenUsage(result.stdout, result.stderr, task.prompt);
