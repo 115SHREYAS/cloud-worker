@@ -16,7 +16,6 @@ import {
 } from "../lib/api";
 import {
   ArrowUp,
-  Paperclip,
   Lock,
   ChevronDown,
   GitBranch,
@@ -72,13 +71,6 @@ function ClaudeIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   );
 }
 
-
-const PROMPT_CHIPS = [
-  "Add a health check endpoint and test suite",
-  "Refactor database queries for performance",
-  "Fix authentication error handling and return codes",
-  "Add input validation and sanitization for webhook payloads",
-];
 
 export function T3TaskComposer({
   selectedRepo,
@@ -800,21 +792,8 @@ export function T3TaskComposer({
               </div>
             </div>
 
-            {/* Right side of toolbar: prompt suggestions & circular blue submit button */}
+            {/* Right side of toolbar: circular blue submit button */}
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  if (!prompt) {
-                    setPrompt(PROMPT_CHIPS[0]);
-                  }
-                }}
-                title="Insert prompt suggestion"
-                className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-[#181924] transition-colors cursor-pointer"
-              >
-                <Paperclip className="h-4 w-4" />
-              </button>
-
               <button
                 type="submit"
                 disabled={!prompt.trim() || isSubmitting}
@@ -834,20 +813,6 @@ export function T3TaskComposer({
             </div>
           </div>
         </form>
-
-        {/* Quick Suggestion Chips under Composer */}
-        <div className="mt-4 flex flex-wrap items-center justify-center gap-1.5 max-w-xl">
-          {PROMPT_CHIPS.map((chip, idx) => (
-            <button
-              key={idx}
-              type="button"
-              onClick={() => setPrompt(chip)}
-              className="rounded-full border border-[#1e202a] bg-[#0c0d12] px-3 py-1 text-xs text-zinc-400 hover:border-blue-500/40 hover:text-zinc-200 transition-colors cursor-pointer"
-            >
-              {chip}
-            </button>
-          ))}
-        </div>
       </div>
     </div>
   );

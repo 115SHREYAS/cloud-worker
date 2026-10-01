@@ -2,13 +2,10 @@
 
 import { useEffect, useState, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import {
-  AVAILABLE_MODELS,
-  type UserPublicProfile,
-  type GitHubInstallation,
-  type GitHubRepository,
-  type CreateTaskInput,
-  type ReasoningEffort,
+import type {
+  UserPublicProfile,
+  GitHubInstallation,
+  GitHubRepository,
 } from "@cloud-worker/shared";
 import {
   getCurrentUser,
@@ -18,7 +15,6 @@ import {
   linkGitHubInstallation,
   saveUserCredentials,
   updateOnboarding,
-  createTask,
   detectLocalProviderCredentials,
   importLocalProviderCredentials,
   startProviderLoginFlow,
@@ -40,10 +36,8 @@ import {
   RefreshCw,
   AlertCircle,
   Server,
-  FileCode,
   Copy,
   ExternalLink,
-  BrainCircuit,
 } from "lucide-react";
 
 function GitHubIcon({ className = "w-4 h-4" }: { className?: string }) {
@@ -58,21 +52,15 @@ function GitHubIcon({ className = "w-4 h-4" }: { className?: string }) {
   );
 }
 
-type Step = 1 | 2 | 3 | 4;
-
-const SAMPLE_PROMPTS = [
-  "Add a health check endpoint and unit test suite",
-  "Refactor authentication middleware to use async/await",
-  "Add input sanitization and unit tests for webhook payloads",
-];
+type Step = 1 | 2 | 3;
 
 export default function OnboardingPage() {
   return (
     <Suspense
       fallback={
-        <div suppressHydrationWarning className="flex min-h-screen w-full items-center justify-center bg-black text-zinc-100">
+        <div suppressHydrationWarning className="flex min-h-screen w-full items-center justify-center bg-[#07080a] text-zinc-100">
           <div suppressHydrationWarning className="flex items-center gap-3 text-sm text-zinc-400">
-            <Loader2 className="h-4 w-4 animate-spin text-emerald-400" />
+            <Loader2 className="h-4 w-4 animate-spin text-blue-400" />
             <span>Loading walkthrough...</span>
           </div>
         </div>
@@ -127,37 +115,24 @@ function OnboardingWizard() {
     }
   }, []);
 
-  // Step 4 state: First Task
-  const [taskOwner, setTaskOwner] = useState("");
-  const [taskRepo, setTaskRepo] = useState("");
-  const [taskBranch, setTaskBranch] = useState("main");
-  const [taskPrompt, setTaskPrompt] = useState(SAMPLE_PROMPTS[0]);
-  const [taskModel, setTaskModel] = useState<string>("codex");
-  const [taskReasoningEffort, setTaskReasoningEffort] = useState<ReasoningEffort>("medium");
-  const [launchingTask, setLaunchingTask] = useState(false);
-  const [taskError, setTaskError] = useState<string | null>(null);
-
-  const handleModelChange = (newModel: string) => {
-    setTaskModel(newModel);
-    const found = AVAILABLE_MODELS.find((m) => m.id === newModel);
-    if (found?.defaultEffort) {
-      setTaskReasoningEffort(found.defaultEffort);
+  // Finish onboarding and redirect to dashboard
+  const finishOnboarding = useCallback(async () => {
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.removeItem("cw_onboarding_step");
+      } catch {}
     }
-  };
-
-  useEffect(() => {
-    if (selectedProvider === "claude") {
-      setTaskModel("claude-3-7-sonnet-20250219");
-      setTaskReasoningEffort("medium");
-    } else {
-      setTaskModel("codex");
-      setTaskReasoningEffort("medium");
+    try {
+      await updateOnboarding({
+        onboardingCompleted: true,
+        defaultModel: selectedProvider === "claude" ? "claude-3-7-sonnet-20250219" : "codex",
+        defaultAuthMode: authMode,
+      });
+    } catch (err) {
+      console.warn("Failed to mark onboarding completed:", err);
     }
-  }, [selectedProvider]);
-
-  const selectedModelObj = AVAILABLE_MODELS.find((m) => m.id === taskModel);
-  const codexModels = AVAILABLE_MODELS.filter((m) => m.provider === "codex");
-  const claudeModels = AVAILABLE_MODELS.filter((m) => m.provider === "claude");
+    router.push("/");
+  }, [selectedProvider, authMode, router]);
 
   // Step navigator with URL and localStorage sync
   const goToStep = useCallback((step: Step) => {
@@ -188,12 +163,6 @@ function OnboardingWizard() {
       if (status?.installUrl) {
         setInstallUrl(status.installUrl);
       }
-
-      if (repos.length > 0) {
-        setTaskOwner((prev) => prev || repos[0].owner);
-        setTaskRepo((prev) => prev || repos[0].name);
-        setTaskBranch((prev) => prev || repos[0].defaultBranch || "main");
-      }
     } finally {
       setLoadingRepos(false);
     }
@@ -211,11 +180,11 @@ function OnboardingWizard() {
         let initialStep: Step = 1;
         if (installationId || setupAction) {
           initialStep = 2;
-        } else if (stepParam && ["1", "2", "3", "4"].includes(stepParam)) {
+        } else if (stepParam && ["1", "2", "3"].includes(stepParam)) {
           initialStep = parseInt(stepParam, 10) as Step;
         } else if (typeof window !== "undefined") {
           const saved = localStorage.getItem("cw_onboarding_step");
-          if (saved && ["1", "2", "3", "4"].includes(saved)) {
+          if (saved && ["1", "2", "3"].includes(saved)) {
             initialStep = parseInt(saved, 10) as Step;
           }
         }
@@ -311,7 +280,7 @@ function OnboardingWizard() {
         setActiveFlow(flow);
         if (flow.phase === "succeeded") {
           clearInterval(interval);
-          goToStep(4);
+          await finishOnboarding();
         } else if (flow.phase === "failed") {
           clearInterval(interval);
           setCredentialError(flow.error || "Authentication failed or timed out.");
@@ -322,14 +291,14 @@ function OnboardingWizard() {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [activeFlow, goToStep]);
+  }, [activeFlow, finishOnboarding]);
 
   const handleImportLocal = async (prov: "codex" | "claude") => {
     setCredentialError(null);
     setIsImportingLocal(true);
     try {
       await importLocalProviderCredentials(prov);
-      goToStep(4);
+      await finishOnboarding();
     } catch (err) {
       setCredentialError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -380,7 +349,7 @@ function OnboardingWizard() {
         authMode,
         credential: credentialValue.trim(),
       });
-      goToStep(4);
+      await finishOnboarding();
     } catch (err) {
       setCredentialError(err instanceof Error ? err.message : "Failed to save credentials.");
     } finally {
@@ -388,76 +357,11 @@ function OnboardingWizard() {
     }
   };
 
-  // Launch the sample task in Step 4 and finish onboarding
-  const handleLaunchSampleTask = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setTaskError(null);
-
-    if (!taskOwner.trim() || !taskRepo.trim() || !taskPrompt.trim()) {
-      setTaskError("Please provide repository details and a prompt.");
-      return;
-    }
-
-    setLaunchingTask(true);
-    try {
-      const selectedModelObj = AVAILABLE_MODELS.find((m) => m.id === taskModel);
-
-      // Mark onboarding as completed
-      await updateOnboarding({
-        onboardingCompleted: true,
-        defaultModel: taskModel,
-        defaultAuthMode: authMode,
-      });
-
-      // Launch the task
-      const payload: CreateTaskInput = {
-        repo: {
-          owner: taskOwner.trim(),
-          repo: taskRepo.trim(),
-          branch: taskBranch.trim() || "main",
-        },
-        prompt: taskPrompt.trim(),
-        model: taskModel,
-        reasoningEffort: selectedModelObj?.supportsReasoning ? taskReasoningEffort : undefined,
-      };
-
-      await createTask(payload);
-      if (typeof window !== "undefined") {
-        try {
-          localStorage.removeItem("cw_onboarding_step");
-        } catch {}
-      }
-      router.push("/");
-    } catch (err) {
-      setTaskError(err instanceof Error ? err.message : "Failed to launch task.");
-      setLaunchingTask(false);
-    }
-  };
-
-  // Skip task and jump to dashboard
-  const handleSkipToDashboard = async () => {
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.removeItem("cw_onboarding_step");
-      } catch {}
-    }
-    try {
-      await updateOnboarding({
-        onboardingCompleted: true,
-        defaultModel: taskModel,
-        defaultAuthMode: authMode,
-      });
-      router.push("/");
-    } catch {
-      router.push("/");
-    }
-  };
-
   if (loadingUser) {
     return (
-      <div suppressHydrationWarning className="flex min-h-screen w-full items-center justify-center bg-black text-zinc-100">
+      <div suppressHydrationWarning className="flex min-h-screen w-full items-center justify-center bg-[#07080a] text-zinc-100">
         <div suppressHydrationWarning className="flex items-center gap-3 text-sm text-zinc-400">
-          <Loader2 className="h-4 w-4 animate-spin text-emerald-400" />
+          <Loader2 className="h-4 w-4 animate-spin text-blue-400" />
           <span>Loading walkthrough...</span>
         </div>
       </div>
@@ -468,15 +372,14 @@ function OnboardingWizard() {
     { num: 1 as Step, title: "Architecture" },
     { num: 2 as Step, title: "GitHub App" },
     { num: 3 as Step, title: "Credentials" },
-    { num: 4 as Step, title: "Sample task" },
   ];
 
   return (
-    <div suppressHydrationWarning className="flex min-h-screen w-full flex-col justify-between bg-black text-zinc-100 selection:bg-emerald-500/20 selection:text-emerald-300">
+    <div suppressHydrationWarning className="flex min-h-screen w-full flex-col justify-between bg-[#07080a] text-zinc-100 selection:bg-blue-500/20 selection:text-blue-300">
       {/* Top Header */}
       <header className="flex h-14 w-full items-center justify-between border-b border-zinc-900 px-6 sm:px-10">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-emerald-400">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-blue-500/20 bg-blue-500/10 text-blue-400">
             <Cpu className="h-4 w-4" />
           </div>
           <span className="text-sm font-semibold tracking-tight text-zinc-100">
@@ -499,7 +402,7 @@ function OnboardingWizard() {
       <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col px-4 py-8 sm:px-6">
         {/* Step Progress Bar */}
         <nav aria-label="Walkthrough progress" className="mb-8">
-          <ol className="grid grid-cols-4 gap-2 border-b border-zinc-900 pb-4">
+          <ol className="grid grid-cols-3 gap-2 border-b border-zinc-900 pb-4">
             {stepsMeta.map((s) => {
               const isActive = s.num === currentStep;
               const isPast = s.num < currentStep;
@@ -518,9 +421,9 @@ function OnboardingWizard() {
                     <span
                       className={`flex h-6 w-6 items-center justify-center rounded-md text-xs font-mono font-medium ${
                         isActive
-                          ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+                          ? "bg-blue-500/20 text-blue-400 border border-blue-500/40"
                           : isPast
-                          ? "bg-zinc-800 text-zinc-300"
+                          ? "bg-zinc-800 text-blue-400"
                           : "bg-zinc-900 text-zinc-600"
                       }`}
                     >
@@ -547,63 +450,57 @@ function OnboardingWizard() {
         {/* Step 1: Architecture Primer */}
         {currentStep === 1 && (
           <div className="space-y-6">
-            <div className="space-y-2">
-              <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
-                How Cloud Worker executes autonomous coding agents
+            <div className="space-y-1.5">
+              <h1 className="text-xl font-semibold tracking-tight text-zinc-100">
+                Execution Architecture
               </h1>
-              <p className="text-sm text-zinc-400 max-w-2xl leading-relaxed">
-                Cloud Worker is designed for heavy coding workflows that require real shell commands, test runners, and package installations without consuming your local machine resources.
+              <p className="text-xs text-zinc-400 max-w-xl">
+                Tasks run inside dedicated Linux microVMs with real terminal execution and live streaming.
               </p>
             </div>
 
-            {/* Architecture diagram cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
-              <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-5 space-y-3">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-emerald-400">
-                  <Server className="h-4 w-4" />
+            {/* Architecture pipeline cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
+              <div className="rounded-xl border border-[#1e202a] bg-[#0c0d12] p-4 space-y-2.5">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-blue-500/20 bg-blue-500/10 text-blue-400">
+                  <Server className="h-3.5 w-3.5" />
                 </div>
-                <h2 className="text-sm font-semibold text-zinc-200">
-                  Isolated Firecracker microVMs
-                </h2>
-                <p className="text-xs text-zinc-400 leading-relaxed">
-                  Every task boots an ephemeral Linux virtual machine in 2 seconds. The environment has its own kernel, filesystem, and network isolation, with metadata and internal IP egress blocked.
-                </p>
+                <div>
+                  <h2 className="text-xs font-semibold text-zinc-200">
+                    Ephemeral microVMs
+                  </h2>
+                  <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
+                    Each task gets a private Linux environment with its own filesystem, shell, and network egress firewall.
+                  </p>
+                </div>
               </div>
 
-              <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-5 space-y-3">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-blue-500/20 bg-blue-500/10 text-blue-400">
-                  <Terminal className="h-4 w-4" />
+              <div className="rounded-xl border border-[#1e202a] bg-[#0c0d12] p-4 space-y-2.5">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-blue-500/20 bg-blue-500/10 text-blue-400">
+                  <Terminal className="h-3.5 w-3.5" />
                 </div>
-                <h2 className="text-sm font-semibold text-zinc-200">
-                  Headless in-VM agent harness
-                </h2>
-                <p className="text-xs text-zinc-400 leading-relaxed">
-                  The microVM executes OpenAI Codex CLI or Claude Code CLI directly inside the Linux container, using your existing subscription session or API key.
-                </p>
+                <div>
+                  <h2 className="text-xs font-semibold text-zinc-200">
+                    CLI agent harnesses
+                  </h2>
+                  <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
+                    Executes OpenAI Codex or Claude Code directly inside the VM using your ChatGPT or Anthropic subscription.
+                  </p>
+                </div>
               </div>
 
-              <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-5 space-y-3">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-amber-500/20 bg-amber-500/10 text-amber-400">
-                  <FileCode className="h-4 w-4" />
+              <div className="rounded-xl border border-[#1e202a] bg-[#0c0d12] p-4 space-y-2.5">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-blue-500/20 bg-blue-500/10 text-blue-400">
+                  <GitPullRequest className="h-3.5 w-3.5" />
                 </div>
-                <h2 className="text-sm font-semibold text-zinc-200">
-                  Live terminal and event stream
-                </h2>
-                <p className="text-xs text-zinc-400 leading-relaxed">
-                  View raw xterm.js stdout/stderr streams, structured agent reasoning, tool calls, and unified diffs rendered in real time over Server-Sent Events.
-                </p>
-              </div>
-
-              <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-5 space-y-3">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-purple-500/20 bg-purple-500/10 text-purple-400">
-                  <GitPullRequest className="h-4 w-4" />
+                <div>
+                  <h2 className="text-xs font-semibold text-zinc-200">
+                    Live stream & pull request
+                  </h2>
+                  <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
+                    Inspect terminal logs and diffs in real time, then review the automated GitHub pull request.
+                  </p>
                 </div>
-                <h2 className="text-sm font-semibold text-zinc-200">
-                  Automated pull requests
-                </h2>
-                <p className="text-xs text-zinc-400 leading-relaxed">
-                  When the agent finishes modifying files and verifying tests, it commits to a dedicated branch and opens a GitHub pull request on your behalf.
-                </p>
               </div>
             </div>
 
@@ -611,7 +508,7 @@ function OnboardingWizard() {
               <button
                 type="button"
                 onClick={() => goToStep(2)}
-                className="flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500 cursor-pointer shadow-xs"
+                className="flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 cursor-pointer shadow-xs shadow-blue-500/20"
               >
                 <span>Continue to GitHub setup</span>
                 <ChevronRight className="h-3.5 w-3.5" />
@@ -678,7 +575,7 @@ function OnboardingWizard() {
               {/* Repositories display */}
               {loadingRepos ? (
                 <div className="flex items-center justify-center p-8 text-xs text-zinc-500">
-                  <Loader2 className="h-4 w-4 animate-spin mr-2 text-emerald-400" />
+                  <Loader2 className="h-4 w-4 animate-spin mr-2 text-blue-400" />
                   <span>Checking connected repositories...</span>
                 </div>
               ) : repositories.length > 0 ? (
@@ -687,7 +584,7 @@ function OnboardingWizard() {
                     <span className="text-xs font-medium text-zinc-300">
                       Connected repositories ({repositories.length})
                     </span>
-                    <span className="text-[11px] text-emerald-400 flex items-center gap-1 font-mono">
+                    <span className="text-[11px] text-blue-400 flex items-center gap-1 font-mono">
                       <Check className="h-3 w-3" /> Ready
                     </span>
                   </div>
@@ -734,7 +631,7 @@ function OnboardingWizard() {
                 <button
                   type="button"
                   onClick={() => goToStep(3)}
-                  className="flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500 cursor-pointer shadow-xs"
+                  className="flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 cursor-pointer shadow-xs shadow-blue-500/20"
                 >
                   <span>Continue to agent credentials</span>
                   <ChevronRight className="h-3.5 w-3.5" />
@@ -771,7 +668,7 @@ function OnboardingWizard() {
                   onClick={() => setSelectedProvider("codex")}
                   className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
                     selectedProvider === "codex"
-                      ? "border-emerald-500/80 bg-zinc-900/90 shadow-xs"
+                      ? "border-blue-500/80 bg-zinc-900/90 shadow-xs"
                       : "border-zinc-800 bg-zinc-950 hover:bg-zinc-900/50"
                   }`}
                 >
@@ -780,7 +677,7 @@ function OnboardingWizard() {
                       OpenAI Codex CLI
                     </span>
                     {selectedProvider === "codex" && (
-                      <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                      <span className="h-2 w-2 rounded-full bg-blue-400" />
                     )}
                   </div>
                   <p className="text-xs text-zinc-400 leading-relaxed">
@@ -793,7 +690,7 @@ function OnboardingWizard() {
                   onClick={() => setSelectedProvider("claude")}
                   className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
                     selectedProvider === "claude"
-                      ? "border-emerald-500/80 bg-zinc-900/90 shadow-xs"
+                      ? "border-blue-500/80 bg-zinc-900/90 shadow-xs"
                       : "border-zinc-800 bg-zinc-950 hover:bg-zinc-900/50"
                   }`}
                 >
@@ -802,7 +699,7 @@ function OnboardingWizard() {
                       Claude Code CLI
                     </span>
                     {selectedProvider === "claude" && (
-                      <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                      <span className="h-2 w-2 rounded-full bg-blue-400" />
                     )}
                   </div>
                   <p className="text-xs text-zinc-400 leading-relaxed">
@@ -853,15 +750,15 @@ function OnboardingWizard() {
                   <div className="space-y-4 pt-2">
                     {/* 1. Local Auto-Detection Banner */}
                     {detectedAuths.find((d) => d.provider === selectedProvider) && (
-                      <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-4 space-y-3">
+                      <div className="rounded-xl border border-blue-500/30 bg-blue-950/20 p-4 space-y-3">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
-                            <Sparkles className="h-4 w-4 text-emerald-400" />
-                            <span className="text-xs font-semibold text-emerald-200">
+                            <Sparkles className="h-4 w-4 text-blue-400" />
+                            <span className="text-xs font-semibold text-blue-200">
                               {detectedAuths.find((d) => d.provider === selectedProvider)?.planName} Detected Locally
                             </span>
                           </div>
-                          <span className="text-[10px] font-mono text-emerald-400/80 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                          <span className="text-[10px] font-mono text-blue-400/80 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
                             {detectedAuths.find((d) => d.provider === selectedProvider)?.source}
                           </span>
                         </div>
@@ -876,7 +773,7 @@ function OnboardingWizard() {
                           type="button"
                           onClick={() => handleImportLocal(selectedProvider)}
                           disabled={isImportingLocal}
-                          className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium cursor-pointer transition-colors shadow-xs disabled:opacity-50"
+                          className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium cursor-pointer transition-colors shadow-xs shadow-blue-500/20 disabled:opacity-50"
                         >
                           {isImportingLocal ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                           <span>Connect from Local Session & Continue</span>
@@ -891,7 +788,7 @@ function OnboardingWizard() {
                           <span className="text-xs font-semibold text-zinc-200">
                             Browser Sign-In Flow
                           </span>
-                          <span className="text-[11px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                          <span className="text-[11px] font-mono text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
                             Zero API Cost
                           </span>
                         </div>
@@ -919,10 +816,10 @@ function OnboardingWizard() {
                       </div>
                     ) : (
                       /* Active Flow Progress Card */
-                      <div className="rounded-xl border border-emerald-500/40 bg-zinc-900/90 p-4 space-y-3 shadow-lg">
+                      <div className="rounded-xl border border-blue-500/40 bg-zinc-900/90 p-4 space-y-3 shadow-lg">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
-                            <Loader2 className="h-4 w-4 text-emerald-400 animate-spin" />
+                            <Loader2 className="h-4 w-4 text-blue-400 animate-spin" />
                             <span className="text-xs font-semibold text-zinc-200">
                               {activeFlow.phase === "waiting_for_user" ? "Waiting for authorization" : "Connecting..."}
                             </span>
@@ -943,13 +840,13 @@ function OnboardingWizard() {
                               <button
                                 type="button"
                                 onClick={() => handleCopyCode(activeFlow.userCode!)}
-                                className="flex items-center gap-1 text-[11px] text-emerald-400 hover:text-emerald-300 cursor-pointer"
+                                className="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 cursor-pointer"
                               >
                                 {copiedCode ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
                                 <span>{copiedCode ? "Copied" : "Copy code"}</span>
                               </button>
                             </div>
-                            <div className="text-center font-mono text-xl tracking-widest text-emerald-300 font-bold py-1 bg-zinc-900/80 rounded border border-emerald-500/20">
+                            <div className="text-center font-mono text-xl tracking-widest text-blue-300 font-bold py-1 bg-zinc-900/80 rounded border border-blue-500/20">
                               {activeFlow.userCode}
                             </div>
                           </div>
@@ -961,7 +858,7 @@ function OnboardingWizard() {
                               href={activeFlow.authorizationUrl}
                               target="_blank"
                               rel="noreferrer"
-                              className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium transition-colors cursor-pointer shadow-xs"
+                              className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors cursor-pointer shadow-xs shadow-blue-500/20"
                             >
                               <span>Open Authorization Page</span>
                               <ExternalLink className="h-3.5 w-3.5" />
@@ -970,7 +867,7 @@ function OnboardingWizard() {
                         )}
 
                         <p className="text-[11px] text-zinc-400 text-center">
-                          Approve in your browser. Once complete, you will advance to Step 4 automatically.
+                          Approve in your browser. Once complete, you will enter the dashboard automatically.
                         </p>
                       </div>
                     )}
@@ -1006,7 +903,7 @@ function OnboardingWizard() {
                                 ? "Paste contents of ~/.codex/auth.json..."
                                 : "Paste sk-ant-oat01-... token or ~/.claude.json..."
                             }
-                            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 placeholder-zinc-500 focus:border-emerald-500 focus:outline-hidden resize-none leading-relaxed"
+                            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 placeholder-zinc-500 focus:border-blue-500 focus:outline-hidden resize-none leading-relaxed"
                           />
                         </div>
                       )}
@@ -1026,7 +923,7 @@ function OnboardingWizard() {
                         }
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-[11px] text-emerald-400 hover:text-emerald-300 transition-colors"
+                        className="inline-flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 transition-colors"
                       >
                         <span>Get key</span>
                         <ExternalLink className="w-3 h-3" />
@@ -1038,7 +935,7 @@ function OnboardingWizard() {
                       value={credentialValue}
                       onChange={(e) => setCredentialValue(e.target.value)}
                       placeholder={selectedProvider === "codex" ? "sk-proj-..." : "sk-ant-api03-..."}
-                      className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 placeholder-zinc-500 focus:border-emerald-500 focus:outline-hidden"
+                      className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 placeholder-zinc-500 focus:border-blue-500 focus:outline-hidden"
                     />
                     <p className="text-[11px] text-zinc-500">
                       Standard usage-based API key from the {selectedProvider === "codex" ? "OpenAI Platform" : "Anthropic Console"}.
@@ -1059,7 +956,7 @@ function OnboardingWizard() {
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
-                    onClick={() => goToStep(4)}
+                    onClick={finishOnboarding}
                     className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
                   >
                     Configure credentials later
@@ -1067,248 +964,17 @@ function OnboardingWizard() {
                   <button
                     type="submit"
                     disabled={savingCredentials || !credentialValue.trim()}
-                    className="flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500 cursor-pointer disabled:opacity-50 shadow-xs"
+                    className="flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 cursor-pointer disabled:opacity-50 shadow-xs shadow-blue-500/20"
                   >
                     {savingCredentials ? (
                       <>
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        <span>Encrypting and saving...</span>
+                        <span>Saving credentials...</span>
                       </>
                     ) : (
                       <>
-                        <span>Save and continue</span>
-                        <ChevronRight className="h-3.5 w-3.5" />
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </form>
-          </div>
-        )}
-
-        {/* Step 4: First Sample Task */}
-        {currentStep === 4 && (
-          <div className="space-y-6">
-            <div className="space-y-2">
-              <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
-                Launch your first coding agent task
-              </h1>
-              <p className="text-sm text-zinc-400 max-w-2xl leading-relaxed">
-                Confirm your task details below. Cloud Worker will provision an isolated microVM, initialize the repository, and start streaming live execution.
-              </p>
-            </div>
-
-            <form onSubmit={handleLaunchSampleTask} className="space-y-5">
-              {taskError && (
-                <div className="flex items-center gap-2 rounded-lg border border-rose-900/60 bg-rose-950/40 p-3 text-xs text-rose-300">
-                  <AlertCircle className="h-4 w-4 shrink-0" />
-                  <span>{taskError}</span>
-                </div>
-              )}
-
-              <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-6 space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label htmlFor="sample-owner-input" className="block text-xs font-medium text-zinc-300 mb-1">
-                      GitHub owner
-                    </label>
-                    <input
-                      id="sample-owner-input"
-                      type="text"
-                      value={taskOwner}
-                      onChange={(e) => setTaskOwner(e.target.value)}
-                      placeholder="octocat"
-                      required
-                      className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:border-emerald-500 focus:outline-hidden"
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="sample-repo-input" className="block text-xs font-medium text-zinc-300 mb-1">
-                      Repository name
-                    </label>
-                    <input
-                      id="sample-repo-input"
-                      type="text"
-                      value={taskRepo}
-                      onChange={(e) => setTaskRepo(e.target.value)}
-                      placeholder="Hello-World"
-                      required
-                      className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:border-emerald-500 focus:outline-hidden"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label htmlFor="sample-branch-input" className="block text-xs font-medium text-zinc-300 mb-1">
-                      Target branch
-                    </label>
-                    <input
-                      id="sample-branch-input"
-                      type="text"
-                      value={taskBranch}
-                      onChange={(e) => setTaskBranch(e.target.value)}
-                      placeholder="main"
-                      className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:border-emerald-500 focus:outline-hidden"
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="sample-model-select" className="block text-xs font-medium text-zinc-300 mb-1">
-                      Agent model & harness
-                    </label>
-                    <select
-                      id="sample-model-select"
-                      value={taskModel}
-                      onChange={(e) => handleModelChange(e.target.value)}
-                      className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-100 focus:border-emerald-500 focus:outline-hidden"
-                    >
-                      <optgroup label="OpenAI Codex">
-                        {codexModels.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name} {m.badge ? `• ${m.badge}` : ""}
-                          </option>
-                        ))}
-                      </optgroup>
-                      <optgroup label="Claude Code">
-                        {claudeModels.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name} {m.badge ? `• ${m.badge}` : ""}
-                          </option>
-                        ))}
-                      </optgroup>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Model description & reasoning effort if supported */}
-                {selectedModelObj && (
-                  <div className="space-y-3 rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-3">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-zinc-400 font-medium">Model description</span>
-                      {selectedModelObj.badge && (
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                          {selectedModelObj.badge}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-[11px] text-zinc-400 leading-relaxed">
-                      {selectedModelObj.description}
-                    </p>
-
-                    {selectedModelObj.supportsReasoning && (
-                      <div className="pt-2 border-t border-zinc-800/60 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <label className="text-xs font-medium text-zinc-300 flex items-center gap-1.5">
-                            <BrainCircuit className="w-3.5 h-3.5 text-emerald-400" />
-                            Reasoning effort / Extended thinking
-                          </label>
-                          <span className="text-[11px] font-mono text-emerald-400 capitalize">
-                            {taskReasoningEffort}
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-4 gap-1.5">
-                          {(["none", "low", "medium", "high"] as const).map((effort) => (
-                            <button
-                              key={effort}
-                              type="button"
-                              onClick={() => setTaskReasoningEffort(effort)}
-                              className={`py-1.5 px-2 rounded-md text-xs font-medium capitalize transition-colors cursor-pointer border ${
-                                taskReasoningEffort === effort
-                                  ? "bg-emerald-600/20 border-emerald-500/50 text-emerald-300"
-                                  : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
-                              }`}
-                            >
-                              {effort}
-                            </button>
-                          ))}
-                        </div>
-
-                        <p className="text-[10px] text-zinc-500">
-                          {taskReasoningEffort === "none" && "No extra reasoning pass; immediate code edits."}
-                          {taskReasoningEffort === "low" && "Fast reasoning pass for direct fixes."}
-                          {taskReasoningEffort === "medium" && "Balanced reasoning for bugs, tests, and refactoring."}
-                          {taskReasoningEffort === "high" && "Deep multi-step reasoning for intricate architectures."}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label htmlFor="sample-prompt-input" className="text-xs font-medium text-zinc-300">
-                      Instruction prompt
-                    </label>
-                    <span className="text-[11px] text-zinc-500 font-mono">
-                      {taskPrompt.length} chars
-                    </span>
-                  </div>
-                  <textarea
-                    id="sample-prompt-input"
-                    rows={3}
-                    value={taskPrompt}
-                    onChange={(e) => setTaskPrompt(e.target.value)}
-                    required
-                    className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:border-emerald-500 focus:outline-hidden resize-none leading-relaxed"
-                  />
-                </div>
-
-                {/* Prompt Presets */}
-                <div className="space-y-1.5 pt-1">
-                  <span className="text-[11px] font-medium text-zinc-500">
-                    Sample suggestions:
-                  </span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {SAMPLE_PROMPTS.map((p, idx) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => setTaskPrompt(p)}
-                        className="text-left text-[11px] px-2.5 py-1 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-800/80 text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer"
-                      >
-                        {p}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between pt-4 border-t border-zinc-900">
-                <button
-                  type="button"
-                  onClick={() => goToStep(3)}
-                  className="rounded-lg px-4 py-2 text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition-colors cursor-pointer"
-                >
-                  Back
-                </button>
-
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={handleSkipToDashboard}
-                    className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
-                  >
-                    Skip sample task and enter dashboard
-                  </button>
-
-                  <button
-                    type="submit"
-                    disabled={launchingTask || !taskOwner.trim() || !taskRepo.trim() || !taskPrompt.trim()}
-                    className="flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500 cursor-pointer disabled:opacity-50 shadow-xs"
-                  >
-                    {launchingTask ? (
-                      <>
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        <span>Provisioning VM sandbox...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="h-3.5 w-3.5" />
-                        <span>Launch task and enter dashboard</span>
+                        <span>Finish and enter dashboard</span>
+                        <Check className="h-3.5 w-3.5" />
                       </>
                     )}
                   </button>
