@@ -5,6 +5,12 @@
       "scripts": {
         "build": "turbo run build",
         "dev": "turbo run dev",
+        "dev:server": "pnpm --filter @cloud-worker/server dev",
+        "dev:web": "pnpm --filter web dev",
+        "db:push": "pnpm --filter @cloud-worker/server db:push",
+        "docker:up": "docker compose up -d",
+        "docker:down": "docker compose down",
+        "docker:logs": "docker compose logs -f",
         "lint": "turbo run lint",
         "typecheck": "turbo run typecheck"
       },
