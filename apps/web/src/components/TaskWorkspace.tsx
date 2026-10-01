@@ -190,8 +190,8 @@ export function TaskWorkspace({ task, onRefresh }: TaskWorkspaceProps) {
       </div>
 
       {/* Tab Content Viewport */}
-      <div className="flex-1 p-2 sm:p-6 overflow-y-auto">
-        <div className={activeTab === "terminal" ? "h-full" : "hidden"}>
+      <div className="flex-1 p-2 sm:p-6 overflow-y-auto min-h-0 flex flex-col">
+        <div className={activeTab === "terminal" ? "flex-1 flex flex-col min-h-0" : "hidden"}>
           <TerminalView
             buffer={terminalBuffer}
             onClear={clearTerminal}

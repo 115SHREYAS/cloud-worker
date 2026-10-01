@@ -58,11 +58,8 @@ export function TerminalView({ buffer, onClear, status }: TerminalViewProps) {
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
 
-    try {
-      fitAddon.fit();
-    } catch {
-      // Ignore initial fit errors
-    }
+    // Mount terminal instance into the DOM container
+    term.open(containerRef.current);
 
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
@@ -72,6 +69,20 @@ export function TerminalView({ buffer, onClear, status }: TerminalViewProps) {
     term.writeln("\x1b[90m┌──────────────────────────────────────────────────────────┐\x1b[0m");
     term.writeln("\x1b[90m│\x1b[0m \x1b[1;36mCloud Worker MicroVM Session\x1b[0m \x1b[90m|\x1b[0m \x1b[32mDirect In-Guest Stream\x1b[0m  \x1b[90m│\x1b[0m");
     term.writeln("\x1b[90m└──────────────────────────────────────────────────────────┘\x1b[0m\r\n");
+
+    // Write existing buffer immediately on mount if available
+    if (buffer) {
+      term.write(buffer);
+      writtenLengthRef.current = buffer.length;
+    }
+
+    const fitTimer = setTimeout(() => {
+      try {
+        fitAddon.fit();
+      } catch {
+        // Ignore fit errors if element not visible yet
+      }
+    }, 50);
 
     // Resize handling
     const resizeObserver = new ResizeObserver(() => {
@@ -85,6 +96,7 @@ export function TerminalView({ buffer, onClear, status }: TerminalViewProps) {
     resizeObserver.observe(containerRef.current);
 
     return () => {
+      clearTimeout(fitTimer);
       resizeObserver.disconnect();
       term.dispose();
       terminalRef.current = null;
