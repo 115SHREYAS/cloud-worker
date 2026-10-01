@@ -31,11 +31,7 @@ export default function LoginPage() {
       try {
         const user = await getCurrentUser();
         if (!ignore && user) {
-          if (!user.onboardingCompleted) {
-            router.replace("/onboarding");
-          } else {
-            router.replace("/");
-          }
+          router.replace("/");
           return;
         }
       } catch {
@@ -65,12 +61,8 @@ export default function LoginPage() {
     setErrorMessage(null);
     setIsLoggingIn(true);
     try {
-      const user = await devLogin(devUsername.trim() || "developer");
-      if (!user.onboardingCompleted) {
-        router.push("/onboarding");
-      } else {
-        router.push("/");
-      }
+      await devLogin(devUsername.trim() || "developer");
+      router.push("/");
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Failed to log in.");
       setIsLoggingIn(false);

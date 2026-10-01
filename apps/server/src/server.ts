@@ -446,7 +446,7 @@ export function createServer(options: ServerOptions) {
               avatarUrl: user.avatarUrl,
             });
 
-            const targetPath = user.onboardingCompleted ? "/" : "/onboarding";
+            const targetPath = "/";
             return new Response(null, {
               status: 302,
               headers: {
@@ -545,7 +545,7 @@ export function createServer(options: ServerOptions) {
               avatarUrl: session.avatarUrl,
               defaultModel: "codex",
               defaultAuthMode: "subscription",
-              onboardingCompleted: false,
+              onboardingCompleted: true,
             });
           }
           return Response.json({ user }, { headers: CORS_HEADERS });

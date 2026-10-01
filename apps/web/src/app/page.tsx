@@ -77,10 +77,6 @@ export default function DashboardPage() {
         if (ignore) return;
 
         if (user) {
-          if (!user.onboardingCompleted) {
-            router.replace("/onboarding");
-            return;
-          }
           setCurrentUser(user);
 
           // Load tasks and connected repositories for user
@@ -110,12 +106,8 @@ export default function DashboardPage() {
     setIsAuthChecking(true);
     try {
       const user = await devLogin(username);
-      if (!user.onboardingCompleted) {
-        router.push("/onboarding");
-      } else {
-        setCurrentUser(user);
-        await Promise.all([loadTasks(), loadRepositories()]);
-      }
+      setCurrentUser(user);
+      await Promise.all([loadTasks(), loadRepositories()]);
     } catch (err) {
       console.error("Developer login failed:", err);
     } finally {
@@ -328,7 +320,14 @@ export default function DashboardPage() {
       {/* Auth & Credential Settings Modal */}
       <AuthSettingsModal
         isOpen={isAuthOpen}
-        onClose={() => setIsAuthOpen(false)}
+        onClose={() => {
+          setIsAuthOpen(false);
+          getCurrentUser()
+            .then((u) => {
+              if (u) setCurrentUser(u);
+            })
+            .catch(() => {});
+        }}
       />
     </div>
   );
