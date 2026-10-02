@@ -38,7 +38,8 @@ export class AgentSession {
     // 4. Safely store prompt in /tmp to avoid polluting /workspace git status
     const promptId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const promptFilePath = `/tmp/.agent-prompt-${promptId}.txt`;
-    await this.sandbox.writeFile(promptFilePath, prompt);
+    const promptWithGuideline = `${prompt.trim()}\n\n---\nWorkflow note: When your changes are complete, please write a single-line conventional commit message summarizing the changes (e.g. "feat(auth): add token refresh support") into /tmp/.pr_title`;
+    await this.sandbox.writeFile(promptFilePath, promptWithGuideline);
 
     let execResult: { exitCode: number | null; stdout: string; stderr: string };
     let refreshedAuthJson: string | undefined;

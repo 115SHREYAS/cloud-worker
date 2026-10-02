@@ -2,8 +2,12 @@ import type { TaskRepository, TaskRecord } from "../db/repository.ts";
 import type { EventBus } from "../events/event-bus.ts";
 import type { StreamEvent, TaskStatus, TokenUsage } from "@cloud-worker/shared";
 import { SandboxManager, AgentSession, initWorkspace, type AgentProvider } from "@cloud-worker/sandbox";
-import type { GitHubTokenManager } from "../github/token-manager.ts";
-import { createPullRequest, formatPullRequestBody } from "../github/pull-request.ts";
+import {
+  createPullRequest,
+  formatPullRequestBody,
+  generatePullRequestMetadata,
+  type GitHubTokenManager,
+} from "../github/index.ts";
 import fs from "fs/promises";
 import { existsSync } from "fs";
 import { join } from "path";
@@ -232,18 +236,26 @@ export class TaskWorker {
       }
 
       if (result.exitCode === 0) {
+        const baseBranch = task.repo.branch || "main";
+
         // Stage all changes (including newly created/untracked files like README.md)
         await sandbox.exec("git add -A", { cwd: "/workspace" });
+
+        // Generate semantic PR metadata & commit message using the hybrid approach
+        const prMeta = await generatePullRequestMetadata({
+          sandbox,
+          prompt: task.prompt,
+          baseBranch,
+          workingBranch: task.workingBranch,
+          finalDiff: result.diff,
+        });
 
         // Commit if there are staged differences
         const stagedCheck = await sandbox.exec("git diff --cached --quiet", { cwd: "/workspace" });
         if (stagedCheck.exitCode !== 0) {
-          const commitMsg = `feat(agent): ${task.prompt.slice(0, 60).replace(/\r?\n/g, " ")}`;
-          await sandbox.writeFile("/tmp/.commit_msg.txt", commitMsg);
+          await sandbox.writeFile("/tmp/.commit_msg.txt", prMeta.commitMessage);
           await sandbox.exec("git commit -F /tmp/.commit_msg.txt", { cwd: "/workspace" });
         }
-
-        const baseBranch = task.repo.branch || "main";
         let finalDiff: string | undefined;
 
         // 1. Capture full diff against the base branch
@@ -317,13 +329,17 @@ export class TaskWorker {
                 repo: task.repo.repo,
                 branch: task.workingBranch,
                 baseBranch,
-                title: `feat(agent): ${task.prompt.slice(0, 60).replace(/\n/g, " ")}`,
+                title: prMeta.title,
                 body: formatPullRequestBody({
                   taskId: task.id,
                   prompt: task.prompt,
                   model: task.model,
                   workingBranch: task.workingBranch,
+                  baseBranch,
+                  title: prMeta.title,
                   diffSummary: finalDiff,
+                  diffStat: prMeta.diffStat,
+                  changedFiles: prMeta.changedFiles,
                 }),
                 tokenManager: this.tokenManager,
               });
