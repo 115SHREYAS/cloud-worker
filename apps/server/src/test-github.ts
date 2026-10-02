@@ -10,7 +10,7 @@ import { handleGitHubWebhook } from "./github/webhooks.ts";
 import { createServer } from "./server.ts";
 
 describe("GitHub App Integration (Phase 5)", () => {
-  it("formats pull request markdown body with prompt, metadata, and diff", () => {
+  it("formats pull request markdown body without prompt or git diff preview", () => {
     const body = formatPullRequestBody({
       taskId: "task-test-123",
       prompt: "Fix the race condition in the cache layer\nHandle concurrent writes",
@@ -20,12 +20,11 @@ describe("GitHub App Integration (Phase 5)", () => {
     });
 
     expect(body).toContain("## Summary");
-    expect(body).toContain("> Fix the race condition in the cache layer");
-    expect(body).toContain("> Handle concurrent writes");
+    expect(body).not.toContain("Original User Instruction");
+    expect(body).not.toContain("Git Diff Preview");
+    expect(body).not.toContain("> Fix the race condition");
     expect(body).toContain("`task-test-123`");
     expect(body).toContain("`agent/patch-task-test-123`");
-    expect(body).toContain("```diff");
-    expect(body).toContain("+ const lock = new Mutex();");
   });
 
   it("creates mock pull request when mockInDev or testing mode is active", async () => {
@@ -165,6 +164,29 @@ describe("GitHub App Integration (Phase 5)", () => {
       expect(createdTask?.repo.repo).toBe("cloud-app");
       expect(createdTask?.prompt).toContain("fix the JSON parsing error in parser.ts");
     }
+
+    // 4b. Handles @cloud-worker-app: with punctuation
+    const appSlugCommentPayload = JSON.stringify({
+      action: "created",
+      issue: { number: 43, title: "Refactor auth" },
+      comment: {
+        body: "@cloud-worker-app: refactor the jwt verification to support public keys",
+        author_association: "COLLABORATOR",
+      },
+      repository: { name: "cloud-app", owner: { login: "octocat-org" }, default_branch: "main" },
+      installation: { id: 778899 },
+    });
+    const appSlugCommentSig = await sign(secret, appSlugCommentPayload);
+    const appSlugResult = await handleGitHubWebhook({
+      event: "issue_comment",
+      signature: appSlugCommentSig,
+      rawBody: appSlugCommentPayload,
+      secret,
+      repository: repo,
+      taskQueue: queue,
+    });
+    expect(appSlugResult.handled).toBe(true);
+    expect(appSlugResult.action).toBe("issue_comment.dispatched");
 
     // 5. Rejects unauthorized commenter
     const unauthorizedPayload = JSON.stringify({

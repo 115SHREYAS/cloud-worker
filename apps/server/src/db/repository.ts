@@ -707,7 +707,7 @@ export async function createTaskRepository(connectionString?: string): Promise<T
   }
 
   try {
-    const testClient = postgres(url, { max: 1, timeout: 2 });
+    const testClient = postgres(url, { max: 1, connect_timeout: 2 });
     await testClient`SELECT 1`;
     await testClient.end();
 

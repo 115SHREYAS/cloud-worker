@@ -115,7 +115,8 @@ export async function handleGitHubWebhook(
       }
 
       const commentBody: string = payload.comment?.body || "";
-      const botMentionRegex = /@cloud-worker(?:\[bot\])?\s+(.+)/is;
+      const appSlug = (process.env.GITHUB_APP_SLUG || "cloud-worker-app").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const botMentionRegex = new RegExp(`@(?:${appSlug}|cloud-worker(?:-app)?)(?:\\[bot\\])?[:,]?\\s+(.+)`, "is");
       const match = commentBody.match(botMentionRegex);
 
       if (!match || !match[1]) {
@@ -151,6 +152,38 @@ export async function handleGitHubWebhook(
         return { handled: false, message: "Missing repository information or task queue" };
       }
 
+      // Extract model override if provided in comment: e.g. --model=codex or --model=claude-3-5-sonnet-20241022
+      let model = "codex";
+      let cleanPrompt = prompt;
+      const modelFlag = prompt.match(/--model=([a-zA-Z0-9.-]+)/i);
+      if (modelFlag && modelFlag[1]) {
+        model = modelFlag[1];
+        cleanPrompt = prompt.replace(modelFlag[0], "").trim();
+      } else {
+        const commenterUser = payload.sender?.id ? await repository.getUserByGitHubId(payload.sender.id) : null;
+        if (commenterUser?.defaultModel) {
+          model = commenterUser.defaultModel;
+        } else {
+          const hasClaude = (await repository.hasAuthSession("claude", "default")) || Boolean(process.env.CLAUDE_AUTH_JSON || process.env.ANTHROPIC_API_KEY);
+          const hasCodex = (await repository.hasAuthSession("codex", "default")) || Boolean(process.env.CODEX_AUTH_JSON || process.env.OPENAI_API_KEY);
+          if (hasClaude && !hasCodex) {
+            model = "claude-3-5-sonnet-20241022";
+          } else {
+            model = "codex";
+          }
+        }
+      }
+
+      if (model === "claude-3-7-sonnet-20250219") {
+        model = "claude-3-5-sonnet-20241022";
+      }
+
+      let userId: string | undefined;
+      if (payload.sender?.id) {
+        const u = await repository.getUserByGitHubId(payload.sender.id);
+        if (u) userId = u.id;
+      }
+
       const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const workingBranch = `agent/patch-${taskId}`;
       const task = await repository.createTask(
@@ -162,10 +195,11 @@ export async function handleGitHubWebhook(
             branch: defaultBranch,
             installationId,
           },
-          prompt: `Issue #${payload.issue?.number}: ${payload.issue?.title || ""}\n\nTask: ${prompt}`,
-          model: "claude-3-7-sonnet-20250219",
+          prompt: `Issue #${payload.issue?.number}: ${payload.issue?.title || ""}\n\nTask: ${cleanPrompt}`,
+          model,
         },
         workingBranch,
+        userId,
       );
 
       await taskQueue.enqueue(task.id);

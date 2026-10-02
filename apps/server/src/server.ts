@@ -789,7 +789,7 @@ export function createServer(options: ServerOptions) {
         }
 
         // GitHub webhook receiver
-        if (path === "/api/webhooks/github" && method === "POST") {
+        if ((path === "/api/webhooks/github" || path === "/api/github/webhooks") && method === "POST") {
           const rawBody = await req.text();
           const event = req.headers.get("x-github-event") || "unknown";
           const signature = req.headers.get("x-hub-signature-256") || undefined;
