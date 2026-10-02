@@ -7,15 +7,17 @@ import {
   Plus,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   FolderGit2,
   GitBranch,
   RefreshCw,
   Settings,
-  CheckCircle2,
   X,
   Compass,
   PanelLeftClose,
   ExternalLink,
+  Archive,
+  Undo2,
 } from "lucide-react";
 
 interface ProjectHistoryPanelProps {
@@ -110,11 +112,56 @@ export function ProjectHistoryPanel({
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const [isSettledExpanded, setIsSettledExpanded] = useState(false);
 
-  // Group tasks into project stacks
-  const projectStacks = useMemo(() => {
+  // Settled tasks state (manually managed, persisted to localStorage)
+  const [settledTaskIds, setSettledTaskIds] = useState<Set<string>>(() => {
+    if (typeof window === "undefined") return new Set<string>();
+    try {
+      const raw = localStorage.getItem("cw_settled_task_ids");
+      if (!raw) return new Set<string>();
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? new Set<string>(parsed) : new Set<string>();
+    } catch {
+      return new Set<string>();
+    }
+  });
+
+  const handleSettleTask = (taskId: string) => {
+    setSettledTaskIds((prev) => {
+      const next = new Set(prev);
+      next.add(taskId);
+      try {
+        localStorage.setItem("cw_settled_task_ids", JSON.stringify(Array.from(next)));
+      } catch (e) {
+        console.error("Failed to save settled task to localStorage", e);
+      }
+      return next;
+    });
+  };
+
+  const handleUnsettleTask = (taskId: string) => {
+    setSettledTaskIds((prev) => {
+      const next = new Set(prev);
+      next.delete(taskId);
+      try {
+        localStorage.setItem("cw_settled_task_ids", JSON.stringify(Array.from(next)));
+      } catch (e) {
+        console.error("Failed to remove settled task from localStorage", e);
+      }
+      return next;
+    });
+  };
+
+  // Group tasks into project stacks and settled list
+  const { projectStacks, settledTasks } = useMemo(() => {
     const stacksMap = new Map<string, ProjectStack>();
+    const settled: Task[] = [];
 
     for (const task of tasks) {
+      if (settledTaskIds.has(task.id)) {
+        settled.push(task);
+        continue;
+      }
+
       const owner = task.repo.owner || "local";
       const repo = task.repo.repo || "workspace";
       const key = `${owner}/${repo}`.toLowerCase();
@@ -135,21 +182,21 @@ export function ProjectHistoryPanel({
 
       const stack = stacksMap.get(key)!;
       stack.tasks.push(task);
+      stack.activeTasks.push(task);
 
       const taskTime = new Date(task.createdAt).getTime() || 0;
       if (taskTime > stack.lastActiveAt) {
         stack.lastActiveAt = taskTime;
       }
-
-      if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") {
-        stack.settledTasks.push(task);
-      } else {
-        stack.activeTasks.push(task);
-      }
     }
 
-    return Array.from(stacksMap.values()).sort((a, b) => b.lastActiveAt - a.lastActiveAt);
-  }, [tasks]);
+    settled.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    return {
+      projectStacks: Array.from(stacksMap.values()).sort((a, b) => b.lastActiveAt - a.lastActiveAt),
+      settledTasks: settled,
+    };
+  }, [tasks, settledTaskIds]);
 
   const filteredStacks = useMemo(() => {
     if (!searchQuery.trim()) return projectStacks;
@@ -160,7 +207,7 @@ export function ProjectHistoryPanel({
         const matchesProject =
           stack.repo.toLowerCase().includes(q) || stack.owner.toLowerCase().includes(q);
 
-        const matchingTasks = stack.tasks.filter(
+        const matchingTasks = stack.activeTasks.filter(
           (t) =>
             t.prompt.toLowerCase().includes(q) ||
             t.id.toLowerCase().includes(q) ||
@@ -175,12 +222,7 @@ export function ProjectHistoryPanel({
           return {
             ...stack,
             tasks: matchingTasks,
-            activeTasks: matchingTasks.filter(
-              (t) => t.status !== "completed" && t.status !== "failed" && t.status !== "cancelled",
-            ),
-            settledTasks: matchingTasks.filter(
-              (t) => t.status === "completed" || t.status === "failed" || t.status === "cancelled",
-            ),
+            activeTasks: matchingTasks,
           };
         }
 
@@ -189,11 +231,18 @@ export function ProjectHistoryPanel({
       .filter((s): s is ProjectStack => s !== null);
   }, [projectStacks, searchQuery]);
 
-  const totalSettledCount = useMemo(() => {
-    return tasks.filter(
-      (t) => t.status === "completed" || t.status === "failed" || t.status === "cancelled",
-    ).length;
-  }, [tasks]);
+  const filteredSettledTasks = useMemo(() => {
+    if (!searchQuery.trim()) return settledTasks;
+    const q = searchQuery.toLowerCase().trim();
+    return settledTasks.filter(
+      (t) =>
+        t.prompt.toLowerCase().includes(q) ||
+        t.id.toLowerCase().includes(q) ||
+        t.repo.repo.toLowerCase().includes(q) ||
+        t.repo.owner.toLowerCase().includes(q) ||
+        t.workingBranch.toLowerCase().includes(q),
+    );
+  }, [settledTasks, searchQuery]);
 
   const toggleProject = (key: string) => {
     setCollapsedProjects((prev) => ({
@@ -247,7 +296,7 @@ export function ProjectHistoryPanel({
                 Project Threads
               </span>
               <span className="rounded-full bg-zinc-800/80 px-2 py-0.5 text-[10px] font-mono text-zinc-400">
-                {tasks.length}
+                {tasks.length - settledTasks.length}
               </span>
             </div>
 
@@ -310,11 +359,15 @@ export function ProjectHistoryPanel({
           {filteredStacks.length === 0 ? (
             <div className="flex flex-col items-center justify-center p-8 text-center text-xs text-zinc-500 space-y-2">
               <FolderGit2 className="h-7 w-7 text-zinc-600 stroke-[1.5]" />
-              <p className="font-medium text-zinc-400">No project threads found</p>
+              <p className="font-medium text-zinc-400">
+                {searchQuery ? "No matching threads" : "No active project threads"}
+              </p>
               <p className="text-[11px] text-zinc-500 max-w-[200px]">
                 {searchQuery
                   ? "Try matching another keyword or repo name."
-                  : "Launch your first task using the composer."}
+                  : settledTasks.length > 0
+                    ? "All sessions are currently settled."
+                    : "Launch your first task using the composer."}
               </p>
             </div>
           ) : (
@@ -339,7 +392,7 @@ export function ProjectHistoryPanel({
                         {stack.repo}
                       </span>
                       <span className="text-[10px] text-zinc-500 font-mono">
-                        {stack.tasks.length}
+                        {stack.activeTasks.length}
                       </span>
                     </button>
 
@@ -376,26 +429,33 @@ export function ProjectHistoryPanel({
                     </div>
                   </div>
 
-                  {/* Tasks inside this project stack */}
+                  {/* Active tasks inside this project stack */}
                   {!isCollapsed && (
                     <div className="mt-1 space-y-1 pl-2">
-                      {stack.tasks.map((task) => {
+                      {stack.activeTasks.map((task) => {
                         const isCurrent = task.id === activeTaskId;
                         const timeAgo = formatRelativeTime(task.createdAt);
 
                         return (
-                          <button
+                          <div
                             key={task.id}
-                            type="button"
+                            role="button"
+                            tabIndex={0}
                             onClick={() => onSelectTask(task.id)}
-                            className={`group relative flex w-full flex-col gap-1 rounded-lg px-2.5 py-2 text-left transition-all cursor-pointer ${
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                onSelectTask(task.id);
+                              }
+                            }}
+                            className={`group relative flex w-full flex-col gap-1.5 rounded-lg px-2.5 py-2 text-left transition-all cursor-pointer ${
                               isCurrent
                                 ? "bg-[#141624] border border-blue-500/40 text-zinc-100 shadow-xs"
                                 : "hover:bg-[#111219] text-zinc-400 hover:text-zinc-200 border border-transparent"
                             }`}
                           >
                             <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-1.5 min-w-0">
+                              <div className="flex items-center gap-1.5 min-w-0 flex-1">
                                 {getStatusIcon(task.status)}
                                 <span className="text-xs font-medium truncate leading-tight text-zinc-200">
                                   {task.prompt.split("\n")[0] || "Coding task"}
@@ -406,8 +466,8 @@ export function ProjectHistoryPanel({
                               </span>
                             </div>
 
-                            <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono pl-3.5">
-                              <div className="flex items-center gap-1 truncate max-w-[170px]">
+                            <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono pl-3.5 gap-2">
+                              <div className="flex items-center gap-1 truncate min-w-0 flex-1">
                                 <GitBranch className="h-2.5 w-2.5 text-zinc-600 shrink-0" />
                                 <span className="truncate">{task.repo.branch}</span>
                                 {task.workingBranch && (
@@ -420,13 +480,36 @@ export function ProjectHistoryPanel({
                                 )}
                               </div>
 
-                              {task.pullRequestUrl && (
-                                <span className="text-blue-400 flex items-center gap-0.5 text-[9px] font-sans">
-                                  PR <ExternalLink className="h-2 w-2" />
-                                </span>
-                              )}
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {task.pullRequestUrl && (
+                                  <a
+                                    href={task.pullRequestUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    title="Open Pull Request on GitHub"
+                                    className="inline-flex items-center gap-0.5 rounded bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-sans text-blue-400 hover:bg-blue-500/20 hover:text-blue-300 transition-colors cursor-pointer"
+                                  >
+                                    <span>PR</span>
+                                    <ExternalLink className="h-2 w-2" />
+                                  </a>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleSettleTask(task.id);
+                                  }}
+                                  title="Settle session"
+                                  className="opacity-70 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-sans text-zinc-400 hover:text-amber-300 bg-[#14151e] hover:bg-[#1f212f] border border-[#232534] transition-all cursor-pointer"
+                                >
+                                  <Archive className="h-2.5 w-2.5" />
+                                  <span>Settle</span>
+                                </button>
+                              </div>
                             </div>
-                          </button>
+                          </div>
                         );
                       })}
                     </div>
@@ -435,63 +518,117 @@ export function ProjectHistoryPanel({
               );
             })
           )}
+        </div>
 
-          {/* Settled Group (Collapsible Completed section like T3 Code) */}
-          {totalSettledCount > 0 && (
-            <div className="pt-3 border-t border-[#161720]">
-              <button
-                type="button"
-                onClick={() => setIsSettledExpanded(!isSettledExpanded)}
-                className="flex w-full items-center justify-between px-2 py-1.5 text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer"
-              >
-                <div className="flex items-center gap-1.5">
-                  <CheckCircle2 className="h-3.5 w-3.5 text-blue-400" />
-                  <span>Settled ({totalSettledCount})</span>
-                </div>
-                {isSettledExpanded ? (
-                  <ChevronDown className="h-3 w-3" />
-                ) : (
-                  <ChevronRight className="h-3 w-3" />
-                )}
-              </button>
+        {/* Settled Group (Pinned at the bottom above User footer) */}
+        <div className="border-t border-[#1c1d25] bg-[#090a0d] shrink-0">
+          <button
+            type="button"
+            onClick={() => setIsSettledExpanded(!isSettledExpanded)}
+            className="flex w-full items-center justify-between px-3 py-2.5 text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-[#101117] transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-2">
+              <Archive className="h-3.5 w-3.5 text-amber-400/80" />
+              <span className="font-semibold text-zinc-300">Settled</span>
+              <span className="rounded-full bg-zinc-800/80 px-1.5 py-0.5 text-[10px] font-mono text-zinc-400">
+                {settledTasks.length}
+              </span>
+            </div>
+            {isSettledExpanded ? (
+              <ChevronDown className="h-3.5 w-3.5 text-zinc-400" />
+            ) : (
+              <ChevronUp className="h-3.5 w-3.5 text-zinc-400" />
+            )}
+          </button>
 
-              {isSettledExpanded && (
-                <div className="mt-1 space-y-1 pl-2">
-                  {tasks
-                    .filter(
-                      (t) =>
-                        t.status === "completed" ||
-                        t.status === "failed" ||
-                        t.status === "cancelled",
-                    )
-                    .slice(0, 15)
-                    .map((t) => (
-                      <button
-                        key={t.id}
-                        type="button"
-                        onClick={() => onSelectTask(t.id)}
-                        className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-left transition-colors cursor-pointer ${
-                          t.id === activeTaskId
-                            ? "bg-[#141624] text-zinc-200 font-medium"
-                            : "text-zinc-500 hover:bg-[#101117] hover:text-zinc-300"
-                        }`}
-                      >
-                        <span className="truncate max-w-[200px]">
-                          {t.prompt.split("\n")[0] || t.id}
-                        </span>
-                        <span className="text-[10px] text-zinc-600 font-mono">
-                          {formatRelativeTime(t.createdAt)}
-                        </span>
-                      </button>
-                    ))}
+          {isSettledExpanded && (
+            <div className="max-h-60 overflow-y-auto px-2 py-2 space-y-1.5 border-t border-[#161720] bg-[#07080b]">
+              {filteredSettledTasks.length === 0 ? (
+                <div className="p-3 text-center text-xs text-zinc-500">
+                  {searchQuery ? "No matching settled sessions" : "No settled sessions yet"}
                 </div>
+              ) : (
+                filteredSettledTasks.map((task) => {
+                  const isCurrent = task.id === activeTaskId;
+                  const timeAgo = formatRelativeTime(task.createdAt);
+
+                  return (
+                    <div
+                      key={task.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => onSelectTask(task.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onSelectTask(task.id);
+                        }
+                      }}
+                      className={`group relative flex w-full flex-col gap-1.5 rounded-lg px-2.5 py-2 text-left transition-all cursor-pointer ${
+                        isCurrent
+                          ? "bg-[#141624] border border-blue-500/40 text-zinc-100 shadow-xs"
+                          : "hover:bg-[#111219] text-zinc-400 hover:text-zinc-200 border border-transparent"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                          {getStatusIcon(task.status)}
+                          <span className="text-xs font-medium truncate leading-tight text-zinc-300">
+                            {task.prompt.split("\n")[0] || "Coding task"}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-zinc-500 shrink-0 font-mono">
+                          {timeAgo}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono pl-3.5 gap-2">
+                        <div className="flex items-center gap-1 truncate min-w-0 flex-1">
+                          <FolderGit2 className="h-2.5 w-2.5 text-zinc-600 shrink-0" />
+                          <span className="truncate text-zinc-400">
+                            {task.repo.repo || "workspace"}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {task.pullRequestUrl && (
+                            <a
+                              href={task.pullRequestUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              title="Open Pull Request on GitHub"
+                              className="inline-flex items-center gap-0.5 rounded bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-sans text-blue-400 hover:bg-blue-500/20 hover:text-blue-300 transition-colors cursor-pointer"
+                            >
+                              <span>PR</span>
+                              <ExternalLink className="h-2 w-2" />
+                            </a>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleUnsettleTask(task.id);
+                            }}
+                            title="Undo settle (move back to active projects)"
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-sans text-zinc-400 hover:text-emerald-300 bg-[#14151e] hover:bg-[#1a1d28] border border-[#222432] transition-colors cursor-pointer"
+                          >
+                            <Undo2 className="h-2.5 w-2.5" />
+                            <span>Undo</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
               )}
             </div>
           )}
         </div>
 
         {/* Footer with User info & Settings */}
-        <div className="flex items-center justify-between p-3 border-t border-[#1c1d25] bg-[#090a0d]">
+        <div className="flex items-center justify-between p-3 border-t border-[#1c1d25] bg-[#090a0d] shrink-0">
           <div className="flex items-center gap-2 min-w-0">
             {currentUser?.avatarUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
