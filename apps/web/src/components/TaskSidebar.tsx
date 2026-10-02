@@ -70,9 +70,7 @@ export function TaskSidebar({
         {/* Brand Header */}
         <div className="flex items-center justify-between p-4 border-b border-zinc-800 bg-zinc-900/40">
           <div className="flex items-center gap-2.5">
-            <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              <Cpu className="w-4 h-4" />
-            </div>
+            <img src="/logo.svg" alt="Cloud Worker" className="h-7 w-7 rounded-lg shadow-xs" />
             <div>
               <h1 className="text-sm font-semibold text-zinc-100">Cloud Worker</h1>
               <span className="text-[10px] text-zinc-400 font-mono">Agent Control Plane</span>

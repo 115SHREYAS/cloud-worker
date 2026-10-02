@@ -163,7 +163,7 @@ export default function DashboardPage() {
     return (
       <div suppressHydrationWarning className="flex h-screen w-screen items-center justify-center bg-[#07080a] text-zinc-100">
         <div suppressHydrationWarning className="flex items-center gap-3 text-xs text-zinc-400 font-mono">
-          <Loader2 className="h-4 w-4 animate-spin text-blue-400" />
+          <img src="/logo.svg" alt="Cloud Worker" className="h-5 w-5 animate-pulse" />
           <span>Starting Cloud Worker Playground...</span>
         </div>
       </div>

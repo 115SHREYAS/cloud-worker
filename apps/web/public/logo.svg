@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none">
+  <defs>
+    <linearGradient id="v1a-bg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0e131f"/>
+      <stop offset="100%" stop-color="#07090e"/>
+    </linearGradient>
+    <linearGradient id="v1a-cloud" x1="7" y1="9" x2="25" y2="24" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="45%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <filter id="v1a-shadow" x="2" y="2" width="28" height="28" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.5" flood-color="#38bdf8" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- Dark Container Badge -->
+  <rect width="32" height="32" rx="7" fill="url(#v1a-bg)"/>
+  <rect x="0.5" y="0.5" width="31" height="31" rx="6.5" stroke="#1e293b" stroke-opacity="0.8"/>
+
+  <!-- Solid Cloud Silhouette with Inset CLI Prompt -->
+  <g filter="url(#v1a-shadow)">
+    <path
+      d="M10 23.5h12.5a4.5 4.5 0 0 0 1.2-8.84A6 6 0 0 0 12.3 11a5 5 0 0 0-4.8 6.2A4.5 4.5 0 0 0 10 23.5z"
+      fill="url(#v1a-cloud)"
+    />
+    <path
+      d="M12.5 15.2l2.5 2.3-2.5 2.3"
+      stroke="#07090e"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M17 19.8h3"
+      stroke="#07090e"
+      stroke-width="1.8"
+      stroke-linecap="round"
+    />
+  </g>
+</svg>

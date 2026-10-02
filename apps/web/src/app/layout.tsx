@@ -15,6 +15,13 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Cloud Worker - Autonomous Coding Agent Dashboard",
   description: "Autonomous cloud coding agent control plane and in-microVM subscription harness.",
+  icons: {
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+    ],
+    shortcut: "/favicon.svg",
+    apple: "/logo.svg",
+  },
 };
 
 export const viewport: Viewport = {
