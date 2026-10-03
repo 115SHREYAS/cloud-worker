@@ -26,6 +26,8 @@ export interface TaskStreamState {
   error: string | null;
   isConnected: boolean;
   isFinished: boolean;
+  currentTurn: number;
+  queuedPrompt: string | null;
   cancel: () => Promise<void>;
   clearTerminal: () => void;
 }
@@ -34,6 +36,8 @@ export function useTaskStream(
   taskId: string | null,
   options?: {
     initialStatus?: TaskStatus;
+    initialTurn?: number;
+    initialQueuedPrompt?: string | null;
     onChunk?: (data: string) => void;
   },
 ): TaskStreamState {
@@ -46,6 +50,8 @@ export function useTaskStream(
   const [pullRequestUrl, setPullRequestUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [currentTurn, setCurrentTurn] = useState<number>(options?.initialTurn || 1);
+  const [queuedPrompt, setQueuedPrompt] = useState<string | null>(options?.initialQueuedPrompt || null);
 
   const onChunkRef = useRef(options?.onChunk);
   useEffect(() => {
@@ -153,6 +159,15 @@ export function useTaskStream(
             }
             break;
           }
+          case "turn_start": {
+            setCurrentTurn(event.turn);
+            setQueuedPrompt(null);
+            break;
+          }
+          case "prompt_queued": {
+            setQueuedPrompt(event.prompt);
+            break;
+          }
           case "done": {
             setStatus("completed");
             if (event.pullRequestUrl) {
@@ -199,6 +214,8 @@ export function useTaskStream(
     error,
     isConnected,
     isFinished,
+    currentTurn,
+    queuedPrompt,
     cancel,
     clearTerminal,
   };

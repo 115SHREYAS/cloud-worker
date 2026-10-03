@@ -40,6 +40,8 @@ export function TaskSidebar({
         return "bg-amber-400 animate-pulse";
       case "running":
         return "bg-blue-400 animate-pulse";
+      case "waiting_input":
+        return "bg-amber-400 animate-pulse";
       case "completed":
         return "bg-emerald-400";
       case "failed":

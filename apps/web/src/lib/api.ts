@@ -56,6 +56,35 @@ export async function cancelTask(id: string): Promise<void> {
   }
 }
 
+export async function sendFollowUpPrompt(
+  id: string,
+  prompt: string,
+): Promise<{ success: boolean; queued: boolean; message: string }> {
+  const res = await fetch(`${API_BASE}/api/tasks/${id}/prompt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to send follow-up prompt: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function finishTaskSession(
+  id: string,
+): Promise<{ success: boolean; finished: boolean }> {
+  const res = await fetch(`${API_BASE}/api/tasks/${id}/finish`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to finish task session: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 export async function fetchTaskLogs(id: string): Promise<StreamEvent[]> {
   const res = await fetch(`${API_BASE}/api/tasks/${id}/logs`);
   if (!res.ok) {
