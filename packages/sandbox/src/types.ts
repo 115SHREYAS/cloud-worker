@@ -37,6 +37,10 @@ export interface WorkspaceInitResult {
 }
 
 
+export interface AgentRunOptions {
+  isContinue?: boolean;
+}
+
 export interface AgentSessionConfig {
   provider?: AgentProvider;
   model?: string;
@@ -49,6 +53,7 @@ export interface AgentSessionConfig {
   cwd?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  isContinue?: boolean;
   onStdout?: (chunk: string) => void | Promise<void>;
   onStderr?: (chunk: string) => void | Promise<void>;
 }

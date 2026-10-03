@@ -1,5 +1,5 @@
 import type { SandboxManager } from "./sandbox";
-import type { AgentSessionConfig, AgentSessionResult, AgentProvider } from "./types";
+import type { AgentSessionConfig, AgentSessionResult, AgentProvider, AgentRunOptions } from "./types";
 
 export class AgentSession {
   private constructor(
@@ -17,11 +17,12 @@ export class AgentSession {
   /**
    * Prepares credentials, ensures the CLI binary is available, and executes the agent prompt inside /workspace.
    */
-  public async run(prompt: string): Promise<AgentSessionResult> {
+  public async run(prompt: string, runOptions?: AgentRunOptions): Promise<AgentSessionResult> {
     const provider: AgentProvider = this.config.provider ?? "codex";
     const cwd = this.config.cwd ?? "/workspace";
     const timeoutMs = this.config.timeoutMs ?? 600_000; // 10 minutes default
     const startTime = Date.now();
+    const isContinue = runOptions?.isContinue ?? this.config.isContinue ?? false;
 
     // 1. Inject subscription authentication or API key
     await this.injectAuth(provider);
@@ -56,16 +57,35 @@ export class AgentSession {
 
     try {
       // 5. Build execution command and environment
-      const { command, env } = this.buildRunCommand(provider, promptFilePath);
+      const { command, env } = this.buildRunCommand(provider, promptFilePath, isContinue);
 
       // 6. Execute CLI with live stdout/stderr streaming
-      const res = await this.sandbox.exec(command, {
+      let res = await this.sandbox.exec(command, {
         cwd,
         env,
         timeoutMs,
         onStdout: this.config.onStdout,
         onStderr: this.config.onStderr,
       });
+
+      // Graceful fallback if resume failed because no previous session was found
+      if (
+        isContinue &&
+        res.exitCode !== 0 &&
+        (res.stderr.toLowerCase().includes("no session") ||
+          res.stderr.toLowerCase().includes("could not find session") ||
+          res.stderr.toLowerCase().includes("no previous"))
+      ) {
+        console.warn(`[agent-session] Session resume failed, starting fresh session: ${res.stderr.trim()}`);
+        const fresh = this.buildRunCommand(provider, promptFilePath, false);
+        res = await this.sandbox.exec(fresh.command, {
+          cwd,
+          env: fresh.env,
+          timeoutMs,
+          onStdout: this.config.onStdout,
+          onStderr: this.config.onStderr,
+        });
+      }
 
       execResult = {
         exitCode: res.exitCode,
@@ -182,13 +202,17 @@ export class AgentSession {
 
     const checkGit = await this.sandbox.exec("git rev-parse --is-inside-work-tree", { cwd });
     if (checkGit.exitCode === 0) {
-      await this.sandbox.exec(`git checkout -B "${branch}"`, { cwd });
+      const current = await this.sandbox.exec("git rev-parse --abbrev-ref HEAD", { cwd });
+      if (current.stdout.trim() !== branch) {
+        await this.sandbox.exec(`git checkout -B "${branch}"`, { cwd });
+      }
     }
   }
 
   private buildRunCommand(
     provider: AgentProvider,
     promptFilePath: string,
+    isContinue = false,
   ): { command: string; env: Record<string, string> } {
     const env: Record<string, string> = {
       CI: "1",
@@ -236,8 +260,9 @@ export class AgentSession {
         flags.push(`-c 'model_reasoning_effort="${this.config.reasoningEffort}"'`);
       }
 
+      const subCmd = isContinue ? "exec resume --last" : "exec";
       return {
-        command: `codex exec ${flags.join(" ")} -- "$(cat "${promptFilePath}")"`,
+        command: `codex ${subCmd} ${flags.join(" ")} -- "$(cat "${promptFilePath}")"`,
         env,
       };
     } else {
@@ -254,8 +279,9 @@ export class AgentSession {
         env.MAX_THINKING_TOKENS = String(budget);
       }
 
+      const continueFlag = isContinue ? "-c " : "";
       return {
-        command: `claude -p "$(cat "${promptFilePath}")" ${flags.join(" ")}`,
+        command: `claude ${continueFlag}-p "$(cat "${promptFilePath}")" ${flags.join(" ")}`,
         env,
       };
     }
