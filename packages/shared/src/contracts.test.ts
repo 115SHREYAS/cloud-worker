@@ -174,5 +174,47 @@ describe("Domain contracts (@cloud-worker/shared)", () => {
     expect(settings.configuredProviders.length).toBe(1);
     expect(settings.linkedInstallationsCount).toBe(1);
   });
+
+  it("validates multi-turn task fields and follow-up stream events", () => {
+    // 1. Task with waiting_input, currentTurn, and warmExpiresAt
+    const multiTurnTask = TaskSchema.parse({
+      id: "task-multi-turn",
+      status: "waiting_input",
+      repo: {
+        owner: "test-user",
+        repo: "test-repo",
+      },
+      prompt: "Step 1: add endpoint",
+      model: "claude-3-7-sonnet-20250219",
+      workingBranch: "agent/patch-multi-turn",
+      currentTurn: 2,
+      queuedPrompt: "Step 2: add unit tests",
+      warmExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    expect(multiTurnTask.status).toBe("waiting_input");
+    expect(multiTurnTask.currentTurn).toBe(2);
+    expect(multiTurnTask.queuedPrompt).toBe("Step 2: add unit tests");
+
+    // 2. prompt_queued event
+    const queuedEvent = StreamEventSchema.parse({
+      type: "prompt_queued",
+      taskId: "task-multi-turn",
+      prompt: "Step 2: add unit tests",
+      timestamp: Date.now(),
+    });
+    expect(queuedEvent.type).toBe("prompt_queued");
+
+    // 3. turn_start event
+    const turnStartEvent = StreamEventSchema.parse({
+      type: "turn_start",
+      taskId: "task-multi-turn",
+      turn: 2,
+      prompt: "Step 2: add unit tests",
+      timestamp: Date.now(),
+    });
+    expect(turnStartEvent.type).toBe("turn_start");
+  });
 });
 

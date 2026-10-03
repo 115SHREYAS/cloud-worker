@@ -100,6 +100,26 @@ export const PingEventSchema = z.object({
 
 export type PingEvent = z.infer<typeof PingEventSchema>;
 
+export const PromptQueuedEventSchema = z.object({
+  type: z.literal("prompt_queued"),
+  taskId: z.string(),
+  prompt: z.string(),
+  position: z.number().int().positive().optional(),
+  timestamp: z.number(),
+});
+
+export type PromptQueuedEvent = z.infer<typeof PromptQueuedEventSchema>;
+
+export const TurnStartEventSchema = z.object({
+  type: z.literal("turn_start"),
+  taskId: z.string(),
+  turn: z.number().int().positive(),
+  prompt: z.string(),
+  timestamp: z.number(),
+});
+
+export type TurnStartEvent = z.infer<typeof TurnStartEventSchema>;
+
 export const StreamEventSchema = z.discriminatedUnion("type", [
   LogChunkStdoutEventSchema,
   LogChunkStderrEventSchema,
@@ -111,6 +131,8 @@ export const StreamEventSchema = z.discriminatedUnion("type", [
   TaskDoneEventSchema,
   TaskErrorEventSchema,
   PingEventSchema,
+  PromptQueuedEventSchema,
+  TurnStartEventSchema,
 ]);
 
 export type StreamEvent = z.infer<typeof StreamEventSchema>;
