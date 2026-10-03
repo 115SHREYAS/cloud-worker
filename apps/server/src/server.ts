@@ -23,12 +23,14 @@ import {
   type SessionPayload,
 } from "./security/session.ts";
 import { providerAuthRelay } from "./auth/provider-auth-relay.ts";
+import type { TaskWorker } from "./queue/task-worker.ts";
 
 export interface ServerOptions {
   port?: number;
   repo: TaskRepository;
   eventBus: EventBus;
   queue: TaskQueue;
+  worker?: TaskWorker;
   tokenManager?: GitHubTokenManager;
   taskLimiter?: RateLimiter;
   webhookLimiter?: RateLimiter;
@@ -56,7 +58,7 @@ function getCurrentUserSession(req: Request): SessionPayload | null {
 }
 
 export function createServer(options: ServerOptions) {
-  const { port = 3001, repo, eventBus, queue, tokenManager } = options;
+  const { port = 3001, repo, eventBus, queue, worker, tokenManager } = options;
   const taskLimiter = options.taskLimiter ?? new RateLimiter({ windowMs: 60_000, maxRequests: 20 });
   const webhookLimiter = options.webhookLimiter ?? new RateLimiter({ windowMs: 60_000, maxRequests: 60 });
 
@@ -307,6 +309,89 @@ export function createServer(options: ServerOptions) {
           });
 
           return Response.json({ success: true, taskId, cancelled }, { headers: CORS_HEADERS });
+        }
+
+        // Follow-up prompt (queue during run or wake warm idle microVM)
+        const promptMatch = path.match(/^\/api\/tasks\/([^/]+)\/prompt$/);
+        if (promptMatch && method === "POST") {
+          const taskId = promptMatch[1];
+          if (!taskId) {
+            return Response.json({ error: "Task ID required" }, { status: 400, headers: CORS_HEADERS });
+          }
+
+          const task = await repo.getTask(taskId);
+          if (!task) {
+            return Response.json({ error: "Task not found" }, { status: 404, headers: CORS_HEADERS });
+          }
+
+          if (task.userId && session && session.sub !== task.userId) {
+            return Response.json({ error: "Unauthorized access to task" }, { status: 403, headers: CORS_HEADERS });
+          }
+
+          if (task.status !== "running" && task.status !== "waiting_input") {
+            return Response.json(
+              { error: `Cannot submit prompt to task in '${task.status}' state.` },
+              { status: 400, headers: CORS_HEADERS },
+            );
+          }
+
+          let body: unknown;
+          try {
+            body = await req.json();
+          } catch {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400, headers: CORS_HEADERS });
+          }
+
+          const promptText =
+            typeof body === "object" && body !== null && "prompt" in body
+              ? String((body as { prompt: unknown }).prompt).trim()
+              : "";
+          if (!promptText) {
+            return Response.json({ error: "Prompt is required" }, { status: 400, headers: CORS_HEADERS });
+          }
+
+          if (worker) {
+            const res = worker.queueFollowUp(taskId, promptText);
+            if (res.queued) {
+              await eventBus.publish({
+                type: "prompt_queued",
+                taskId,
+                prompt: promptText,
+                timestamp: Date.now(),
+              });
+            }
+            return Response.json(
+              { success: true, queued: res.queued, message: res.message },
+              { headers: CORS_HEADERS },
+            );
+          }
+
+          return Response.json({ error: "Task worker not available" }, { status: 500, headers: CORS_HEADERS });
+        }
+
+        // Finish warm idle task session cleanly
+        const finishMatch = path.match(/^\/api\/tasks\/([^/]+)\/finish$/);
+        if (finishMatch && method === "POST") {
+          const taskId = finishMatch[1];
+          if (!taskId) {
+            return Response.json({ error: "Task ID required" }, { status: 400, headers: CORS_HEADERS });
+          }
+
+          const task = await repo.getTask(taskId);
+          if (!task) {
+            return Response.json({ error: "Task not found" }, { status: 404, headers: CORS_HEADERS });
+          }
+
+          if (task.userId && session && session.sub !== task.userId) {
+            return Response.json({ error: "Unauthorized access to task" }, { status: 403, headers: CORS_HEADERS });
+          }
+
+          if (worker) {
+            const finished = worker.finishSession(taskId);
+            return Response.json({ success: true, finished }, { headers: CORS_HEADERS });
+          }
+
+          return Response.json({ error: "Task worker not available" }, { status: 500, headers: CORS_HEADERS });
         }
 
         // GitHub OAuth initiation

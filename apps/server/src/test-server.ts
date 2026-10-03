@@ -21,6 +21,7 @@ async function runTests() {
     repo,
     eventBus,
     queue,
+    worker,
   });
 
   console.log(`Test server running at ${BASE_URL}`);
@@ -211,7 +212,37 @@ async function runTests() {
       throw new Error(`Expected status to be cancelled, got ${cancelledTask?.status}`);
     }
 
-    console.log("\nAll Phase 3 control plane tests passed successfully!");
+    // 9. Test Follow-up Prompt Endpoint
+    console.log("\n9. Testing POST /api/tasks/:id/prompt...");
+    const fuTaskId = "task_followup_test";
+    await repo.createTask(fuTaskId, createTaskPayload, "agent/patch-fu");
+    await repo.updateTask(fuTaskId, { status: "waiting_input" });
+
+    const promptRes = await fetch(`${BASE_URL}/api/tasks/${fuTaskId}/prompt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "Add comprehensive integration tests" }),
+    });
+    if (!promptRes.ok) throw new Error(`Follow-up prompt request failed: ${promptRes.status}`);
+    const promptData = (await promptRes.json()) as { success: boolean; queued: boolean; message: string };
+    console.log("Follow-up prompt response:", promptData);
+    if (!promptData.success) {
+      throw new Error("Expected prompt submission to succeed");
+    }
+
+    // 10. Test Finish Session Endpoint
+    console.log("\n10. Testing POST /api/tasks/:id/finish...");
+    const finishRes = await fetch(`${BASE_URL}/api/tasks/${fuTaskId}/finish`, {
+      method: "POST",
+    });
+    if (!finishRes.ok) throw new Error(`Finish request failed: ${finishRes.status}`);
+    const finishData = (await finishRes.json()) as { success: boolean };
+    console.log("Finish response:", finishData);
+    if (!finishData.success) {
+      throw new Error("Expected finish request to succeed");
+    }
+
+    console.log("\nAll control plane and multi-turn follow-up tests passed successfully!");
   } finally {
     server.stop();
   }

@@ -168,7 +168,7 @@ export class DrizzleTaskRepository implements TaskRepository {
   }
 
   async listActiveTasks(limit = 100, userId?: string): Promise<TaskRecord[]> {
-    const activeStatuses = ["pending", "provisioning", "cloning", "running"];
+    const activeStatuses = ["pending", "provisioning", "cloning", "running", "waiting_input"];
     if (userId) {
       const rows = await this.db
         .select()
@@ -516,7 +516,7 @@ export class MemoryTaskRepository implements TaskRepository {
   }
 
   async listActiveTasks(limit = 100, userId?: string): Promise<TaskRecord[]> {
-    const activeStatuses = new Set(["pending", "provisioning", "cloning", "running"]);
+    const activeStatuses = new Set(["pending", "provisioning", "cloning", "running", "waiting_input"]);
     let list = Array.from(this.tasks.values()).filter((t) => activeStatuses.has(t.status));
     if (userId) {
       list = list.filter((t) => t.userId === userId);

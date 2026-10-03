@@ -51,7 +51,13 @@ function estimateTokenUsage(stdout: string, stderr: string, prompt: string): Tok
 export class TaskWorker {
   private readonly activeControllers = new Map<string, AbortController>();
   private readonly activeSandboxes = new Map<string, SandboxManager>();
+  private readonly pendingPrompts = new Map<string, string[]>();
+  private readonly promptResolvers = new Map<string, (prompt: string | null) => void>();
+  private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly sessionStartTimes = new Map<string, number>();
   private readonly maxTaskDurationMs: number;
+  private readonly maxSessionDurationMs: number = 3300_000; // 55 minutes hard cap for E2B instance
+  private readonly idleTimeoutMs: number = 600_000; // 10 minutes warm idle window
   private readonly e2bApiKey?: string;
 
   constructor(
@@ -65,7 +71,80 @@ export class TaskWorker {
     this.e2bApiKey = e2bApiKey;
   }
 
+  public queueFollowUp(taskId: string, prompt: string): { queued: boolean; message: string } {
+    const trimmed = prompt.trim();
+    if (!trimmed) {
+      return { queued: false, message: "Prompt cannot be empty" };
+    }
 
+    // 1. If worker is waiting in warm idle, wake it up immediately!
+    const resolver = this.promptResolvers.get(taskId);
+    if (resolver) {
+      const timer = this.idleTimers.get(taskId);
+      if (timer) {
+        clearTimeout(timer);
+        this.idleTimers.delete(taskId);
+      }
+      this.promptResolvers.delete(taskId);
+      resolver(trimmed);
+      return { queued: false, message: "Follow-up prompt accepted. Executing in warm sandbox." };
+    }
+
+    // 2. If worker is actively running a turn, queue it for next turn!
+    if (this.activeControllers.has(taskId)) {
+      let queue = this.pendingPrompts.get(taskId);
+      if (!queue) {
+        queue = [];
+        this.pendingPrompts.set(taskId, queue);
+      }
+      queue.push(trimmed);
+
+      // Persist latest queuedPrompt on task record so refresh / UI knows
+      this.repo.updateTask(taskId, { queuedPrompt: trimmed }).catch((err) => {
+        console.warn(`[task-worker] Failed to record queuedPrompt for ${taskId}:`, err);
+      });
+
+      return {
+        queued: true,
+        message: "Prompt queued. It will execute as soon as the current turn finishes.",
+      };
+    }
+
+    return { queued: false, message: "Task session is not active." };
+  }
+
+  public finishSession(taskId: string): boolean {
+    const resolver = this.promptResolvers.get(taskId);
+    if (resolver) {
+      const timer = this.idleTimers.get(taskId);
+      if (timer) {
+        clearTimeout(timer);
+        this.idleTimers.delete(taskId);
+      }
+      this.promptResolvers.delete(taskId);
+      resolver(null); // Signal clean exit
+      return true;
+    }
+    return false;
+  }
+
+  private waitForFollowUp(taskId: string, timeoutMs: number): Promise<string | null> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.idleTimers.delete(taskId);
+        this.promptResolvers.delete(taskId);
+        resolve(null);
+      }, timeoutMs);
+
+      this.idleTimers.set(taskId, timer);
+      this.promptResolvers.set(taskId, (prompt: string | null) => {
+        clearTimeout(timer);
+        this.idleTimers.delete(taskId);
+        this.promptResolvers.delete(taskId);
+        resolve(prompt);
+      });
+    });
+  }
 
   public async processTask(taskId: string): Promise<void> {
     const task = await this.repo.getTask(taskId);
@@ -80,11 +159,13 @@ export class TaskWorker {
 
     const controller = new AbortController();
     this.activeControllers.set(taskId, controller);
+    this.sessionStartTimes.set(taskId, Date.now());
+    this.pendingPrompts.set(taskId, []);
 
     let isTimedOut = false;
     const timeoutHandle = setTimeout(() => {
       isTimedOut = true;
-      controller.abort("Task execution timed out");
+      controller.abort("Task execution timed out (exceeded maximum 1-hour session limit)");
       const activeSb = this.activeSandboxes.get(taskId);
       if (activeSb) {
         activeSb
@@ -93,7 +174,7 @@ export class TaskWorker {
             console.warn(`[task-worker] Failed to destroy sandbox on timeout for task ${taskId}:`, err),
           );
       }
-    }, this.maxTaskDurationMs);
+    }, this.maxSessionDurationMs);
 
     let sandbox: SandboxManager | undefined;
 
@@ -176,236 +257,349 @@ export class TaskWorker {
         return;
       }
 
-      // 6. Start agent execution loop
-      await this.updateStatus(taskId, "running", `Running ${provider} agent harness`);
+      // 6. Start agent execution loop (multi-turn follow-up loop)
+      let turn = 1;
+      let currentPrompt = task.prompt;
+      let pullRequestUrl: string | undefined = task.pullRequestUrl;
+      let totalInputTokens = 0;
+      let totalOutputTokens = 0;
+      let totalCostUsd = 0;
 
-      const session = AgentSession.create(sandbox, {
-        provider,
-        model: task.model,
-        reasoningEffort: task.reasoningEffort,
-        authJson,
-        apiKey,
-        workingBranch: task.workingBranch,
-        baseBranch: task.repo.branch,
-        signal: controller.signal,
-        onStdout: async (data) => {
+      while (!controller.signal.aborted) {
+        // Enforce 55-minute session ceiling to guard against the 1-hour E2B microVM hard limit
+        const sessionStart = this.sessionStartTimes.get(taskId) || Date.now();
+        const sessionElapsed = Date.now() - sessionStart;
+        const remainingSessionMs = this.maxSessionDurationMs - sessionElapsed;
+        if (remainingSessionMs <= 60_000) {
+          console.warn(`[task-worker] Session time ceiling reached for ${taskId} (${Math.round(sessionElapsed / 60000)}m)`);
           await this.emitAndLog({
-            type: "stdout",
+            type: "status",
             taskId,
-            data,
+            status: "running",
+            message: "Session time limit (55m) reached. Finalizing task before microVM expiration.",
             timestamp: Date.now(),
           });
-        },
-        onStderr: async (data) => {
-          await this.emitAndLog({
-            type: "stderr",
-            taskId,
-            data,
-            timestamp: Date.now(),
-          });
-        },
-      });
+          break;
+        }
 
-      const result = await session.run(task.prompt);
-
-      // 7. Persist refreshed subscription tokens if updated by CLI
-      if (result.refreshedAuthJson) {
-        await this.repo.saveAuthSession(provider, result.refreshedAuthJson);
-        console.log(`[task-worker] Updated refreshed auth session for ${provider}`);
-      }
-
-      // 8. Capture and publish git diff
-      if (result.diff) {
-        await this.repo.updateTask(taskId, { diff: result.diff });
-        await this.emitAndLog({
-          type: "diff",
+        // Update task state for the active turn
+        await this.repo.updateTask(taskId, {
+          currentTurn: turn,
+          status: "running",
+          queuedPrompt: undefined,
+          warmExpiresAt: undefined,
+        });
+        await this.updateStatus(
           taskId,
-          diff: result.diff,
+          "running",
+          turn === 1 ? `Running ${provider} agent harness` : `Running follow-up turn ${turn}`,
+        );
+        await this.emitAndLog({
+          type: "turn_start",
+          taskId,
+          turn,
+          prompt: currentPrompt,
           timestamp: Date.now(),
         });
-      }
 
-      // 9. Evaluate outcome
-      if (controller.signal.aborted) {
-        if (isTimedOut) {
-          await this.updateStatus(taskId, "failed", `Task timed out after ${Math.round(this.maxTaskDurationMs / 1000)}s`);
-        } else {
-          await this.updateStatus(taskId, "cancelled", "Task cancelled by user");
-        }
-        return;
-      }
-
-      if (result.exitCode === 0) {
-        const baseBranch = task.repo.branch || "main";
-
-        // Stage all changes (including newly created/untracked files like README.md)
-        await sandbox.exec("git add -A", { cwd: "/workspace" });
-
-        // Generate semantic PR metadata & commit message using the hybrid approach
-        const prMeta = await generatePullRequestMetadata({
-          sandbox,
-          prompt: task.prompt,
-          baseBranch,
+        const session = AgentSession.create(sandbox, {
+          provider,
+          model: task.model,
+          reasoningEffort: task.reasoningEffort,
+          authJson,
+          apiKey,
           workingBranch: task.workingBranch,
-          finalDiff: result.diff,
+          baseBranch: task.repo.branch,
+          signal: controller.signal,
+          isContinue: turn > 1,
+          onStdout: async (data) => {
+            await this.emitAndLog({
+              type: "stdout",
+              taskId,
+              data,
+              timestamp: Date.now(),
+            });
+          },
+          onStderr: async (data) => {
+            await this.emitAndLog({
+              type: "stderr",
+              taskId,
+              data,
+              timestamp: Date.now(),
+            });
+          },
         });
 
-        // Commit if there are staged differences
-        const stagedCheck = await sandbox.exec("git diff --cached --quiet", { cwd: "/workspace" });
-        if (stagedCheck.exitCode !== 0) {
-          await sandbox.writeFile("/tmp/.commit_msg.txt", prMeta.commitMessage);
-          await sandbox.exec("git commit -F /tmp/.commit_msg.txt", { cwd: "/workspace" });
-        }
-        let finalDiff: string | undefined;
+        const result = await session.run(currentPrompt, { isContinue: turn > 1 });
 
-        // 1. Capture full diff against the base branch
-        const branchDiffResult = await sandbox.exec(`git diff "${baseBranch}...HEAD"`, { cwd: "/workspace" });
-        if (branchDiffResult.exitCode === 0 && branchDiffResult.stdout.trim().length > 0) {
-          finalDiff = branchDiffResult.stdout;
-        } else {
-          // 2. Fallback to previous commit diff or agent session diff
-          const headDiffResult = await sandbox.exec("git diff HEAD~1", { cwd: "/workspace" });
-          if (headDiffResult.exitCode === 0 && headDiffResult.stdout.trim().length > 0) {
-            finalDiff = headDiffResult.stdout;
-          } else if (result.diff && result.diff.trim().length > 0) {
-            finalDiff = result.diff;
-          }
+        // 7. Persist refreshed subscription tokens if updated by CLI
+        if (result.refreshedAuthJson) {
+          await this.repo.saveAuthSession(provider, result.refreshedAuthJson);
+          console.log(`[task-worker] Updated refreshed auth session for ${provider}`);
         }
 
-        // Check if new commits exist on the working branch
-        const revCountResult = await sandbox.exec(`git rev-list --count "${baseBranch}..HEAD"`, { cwd: "/workspace" });
-        const newCommitsCount = parseInt(revCountResult.stdout.trim(), 10) || 0;
-
-        if (finalDiff) {
-          await this.repo.updateTask(taskId, { diff: finalDiff });
-          await this.emitAndLog({
-            type: "diff",
-            taskId,
-            diff: finalDiff,
-            timestamp: Date.now(),
-          });
-        }
-
-        let pullRequestUrl: string | undefined;
-
-        // Push working branch and open pull request if authenticated and changes exist
-        const hasAuth = Boolean(task.repo.installationId || process.env.GITHUB_TOKEN);
-        const hasDiff = Boolean((finalDiff && finalDiff.trim().length > 0) || newCommitsCount > 0);
-
-        if (hasAuth && hasDiff) {
-          try {
-            // Re-acquire fresh token to ensure it has not expired during the agent run
-            let pushToken = process.env.GITHUB_TOKEN;
-            if (task.repo.installationId && this.tokenManager && this.tokenManager.isConfigured()) {
-              try {
-                pushToken = await this.tokenManager.getInstallationToken(task.repo.installationId);
-              } catch (tokenErr) {
-                console.warn(`[task-worker] Failed to refresh installation token for push:`, tokenErr);
-              }
-            }
-
-            if (pushToken) {
-              const freshPushUrl = `https://x-access-token:${pushToken}@github.com/${task.repo.owner}/${task.repo.repo}.git`;
-              await sandbox.exec(`git remote set-url origin "${freshPushUrl}"`, { cwd: "/workspace" });
-            }
-
-            await this.emitAndLog({
-              type: "status",
-              taskId,
-              status: "running",
-              message: `Pushing working branch ${task.workingBranch} to GitHub`,
-              timestamp: Date.now(),
-            });
-
-            const pushResult = await sandbox.exec(
-              `git push -u origin "${task.workingBranch}"`,
-              { cwd: "/workspace", timeoutMs: 60_000 },
-            );
-
-            if (pushResult.exitCode === 0 || pushResult.stderr.includes("Everything up-to-date")) {
-              const pr = await createPullRequest({
-                installationId: task.repo.installationId,
-                owner: task.repo.owner,
-                repo: task.repo.repo,
-                branch: task.workingBranch,
-                baseBranch,
-                title: prMeta.title,
-                body: formatPullRequestBody({
-                  taskId: task.id,
-                  prompt: task.prompt,
-                  model: task.model,
-                  workingBranch: task.workingBranch,
-                  baseBranch,
-                  title: prMeta.title,
-                  diffSummary: finalDiff,
-                  diffStat: prMeta.diffStat,
-                  changedFiles: prMeta.changedFiles,
-                }),
-                tokenManager: this.tokenManager,
-              });
-              pullRequestUrl = pr.pullRequestUrl;
-              await this.repo.updateTask(taskId, { pullRequestUrl });
-              await this.emitAndLog({
-                type: "status",
-                taskId,
-                status: "running",
-                message: `Opened Pull Request: ${pr.pullRequestUrl}`,
-                timestamp: Date.now(),
-              });
-            } else {
-              console.warn(`[task-worker] Branch push exited with code ${pushResult.exitCode}: ${pushResult.stderr}`);
-              await this.emitAndLog({
-                type: "status",
-                taskId,
-                status: "running",
-                message: `Branch push warning: ${pushResult.stderr || "non-zero exit code"}`,
-                timestamp: Date.now(),
-              });
-            }
-          } catch (prErr) {
-            console.warn(`[task-worker] Push or PR creation failed for ${taskId}:`, prErr);
-            await this.emitAndLog({
-              type: "status",
-              taskId,
-              status: "running",
-              message: `PR creation notice: ${prErr instanceof Error ? prErr.message : String(prErr)}`,
-              timestamp: Date.now(),
-            });
-          }
-        } else if (!hasDiff) {
-          console.log(`[task-worker] No diff detected between ${baseBranch} and ${task.workingBranch}`);
-        }
-
-        const tokenUsage = estimateTokenUsage(result.stdout, result.stderr, task.prompt);
+        // Accumulate token usage
+        const turnUsage = estimateTokenUsage(result.stdout, result.stderr, currentPrompt);
+        totalInputTokens += turnUsage.inputTokens;
+        totalOutputTokens += turnUsage.outputTokens;
+        totalCostUsd = Math.round((totalCostUsd + (turnUsage.estimatedCostUsd ?? 0)) * 10000) / 10000;
+        const cumulativeUsage: TokenUsage = {
+          inputTokens: totalInputTokens,
+          outputTokens: totalOutputTokens,
+          totalTokens: totalInputTokens + totalOutputTokens,
+          estimatedCostUsd: totalCostUsd,
+        };
 
         if (controller.signal.aborted) {
           if (isTimedOut) {
-            const timeoutMsg = `Task timed out after ${Math.round(this.maxTaskDurationMs / 1000)}s`;
-            await this.repo.updateTask(taskId, {
-              status: "failed",
-              error: timeoutMsg,
-              completedAt: new Date().toISOString(),
-              tokenUsage,
-            });
-            await this.updateStatus(taskId, "failed", timeoutMsg);
-            await this.emitAndLog({
-              type: "error",
-              taskId,
-              message: timeoutMsg,
-              timestamp: Date.now(),
-            });
+            await this.updateStatus(taskId, "failed", `Task timed out after ${Math.round(this.maxSessionDurationMs / 1000)}s`);
           } else {
-            console.log(`[task-worker] Task ${taskId} was cancelled before completion recording.`);
+            await this.updateStatus(taskId, "cancelled", "Task cancelled by user");
           }
           return;
         }
 
+        if (result.exitCode === 0) {
+          const baseBranch = task.repo.branch || "main";
+
+          // Stage all changes (including newly created/untracked files)
+          await sandbox.exec("git add -A", { cwd: "/workspace" });
+
+          // Commit staged changes if any exist
+          const stagedCheck = await sandbox.exec("git diff --cached --quiet", { cwd: "/workspace" });
+          if (stagedCheck.exitCode !== 0) {
+            const prMeta = await generatePullRequestMetadata({
+              sandbox,
+              prompt: currentPrompt,
+              baseBranch,
+              workingBranch: task.workingBranch,
+              finalDiff: result.diff,
+            });
+            const commitMsgBase64 = Buffer.from(prMeta.commitMessage).toString("base64");
+            const commitResult = await sandbox.exec(
+              `echo "${commitMsgBase64}" | base64 -d | git commit -F -`,
+              { cwd: "/workspace" },
+            );
+            if (commitResult.exitCode !== 0) {
+              const safeMsg = (prMeta.title || "update from agent").replace(/["$`\\]/g, "");
+              await sandbox.exec(`git commit -m "${safeMsg}"`, { cwd: "/workspace" });
+            }
+          }
+
+          // Capture cumulative diff against base branch
+          let finalDiff: string | undefined;
+          const branchDiffResult = await sandbox.exec(`git diff "${baseBranch}...HEAD"`, { cwd: "/workspace" });
+          if (branchDiffResult.exitCode === 0 && branchDiffResult.stdout.trim().length > 0) {
+            finalDiff = branchDiffResult.stdout;
+          } else {
+            const headDiffResult = await sandbox.exec("git diff HEAD~1", { cwd: "/workspace" });
+            if (headDiffResult.exitCode === 0 && headDiffResult.stdout.trim().length > 0) {
+              finalDiff = headDiffResult.stdout;
+            } else if (result.diff && result.diff.trim().length > 0) {
+              finalDiff = result.diff;
+            }
+          }
+
+          const revCountResult = await sandbox.exec(`git rev-list --count "${baseBranch}..HEAD"`, { cwd: "/workspace" });
+          const newCommitsCount = parseInt(revCountResult.stdout.trim(), 10) || 0;
+
+          if (finalDiff) {
+            await this.repo.updateTask(taskId, { diff: finalDiff, tokenUsage: cumulativeUsage });
+            await this.emitAndLog({
+              type: "diff",
+              taskId,
+              diff: finalDiff,
+              timestamp: Date.now(),
+            });
+          }
+
+          // Push working branch and open/update pull request if authenticated
+          const hasAuth = Boolean(task.repo.installationId || process.env.GITHUB_TOKEN);
+          const hasDiff = Boolean((finalDiff && finalDiff.trim().length > 0) || newCommitsCount > 0);
+
+          if (hasAuth && hasDiff) {
+            try {
+              let pushToken = process.env.GITHUB_TOKEN;
+              if (task.repo.installationId && this.tokenManager && this.tokenManager.isConfigured()) {
+                try {
+                  pushToken = await this.tokenManager.getInstallationToken(task.repo.installationId);
+                } catch (tokenErr) {
+                  console.warn(`[task-worker] Failed to refresh installation token for push:`, tokenErr);
+                }
+              }
+
+              if (pushToken) {
+                const freshPushUrl = `https://x-access-token:${pushToken}@github.com/${task.repo.owner}/${task.repo.repo}.git`;
+                await sandbox.exec(`git remote set-url origin "${freshPushUrl}"`, { cwd: "/workspace" });
+              }
+
+              await this.emitAndLog({
+                type: "status",
+                taskId,
+                status: "running",
+                message: `Pushing branch ${task.workingBranch} (turn ${turn}) to GitHub`,
+                timestamp: Date.now(),
+              });
+
+              const pushResult = await sandbox.exec(
+                `git push -u origin "${task.workingBranch}"`,
+                { cwd: "/workspace", timeoutMs: 60_000 },
+              );
+
+              if (pushResult.exitCode === 0 || pushResult.stderr.includes("Everything up-to-date")) {
+                if (!pullRequestUrl) {
+                  const prMeta = await generatePullRequestMetadata({
+                    sandbox,
+                    prompt: task.prompt,
+                    baseBranch,
+                    workingBranch: task.workingBranch,
+                    finalDiff,
+                  });
+                  const pr = await createPullRequest({
+                    installationId: task.repo.installationId,
+                    owner: task.repo.owner,
+                    repo: task.repo.repo,
+                    branch: task.workingBranch,
+                    baseBranch,
+                    title: prMeta.title,
+                    body: formatPullRequestBody({
+                      taskId: task.id,
+                      prompt: task.prompt,
+                      model: task.model,
+                      workingBranch: task.workingBranch,
+                      baseBranch,
+                      title: prMeta.title,
+                      diffSummary: finalDiff,
+                      diffStat: prMeta.diffStat,
+                      changedFiles: prMeta.changedFiles,
+                    }),
+                    tokenManager: this.tokenManager,
+                  });
+                  pullRequestUrl = pr.pullRequestUrl;
+                  await this.repo.updateTask(taskId, { pullRequestUrl });
+                  await this.emitAndLog({
+                    type: "status",
+                    taskId,
+                    status: "running",
+                    message: `Opened Pull Request: ${pr.pullRequestUrl}`,
+                    timestamp: Date.now(),
+                  });
+                } else {
+                  await this.emitAndLog({
+                    type: "status",
+                    taskId,
+                    status: "running",
+                    message: `Updated Pull Request with turn ${turn} changes: ${pullRequestUrl}`,
+                    timestamp: Date.now(),
+                  });
+                }
+              } else {
+                console.warn(`[task-worker] Branch push exited with code ${pushResult.exitCode}: ${pushResult.stderr}`);
+              }
+            } catch (prErr) {
+              console.warn(`[task-worker] Push or PR creation failed for ${taskId}:`, prErr);
+            }
+          }
+
+          // Evaluate remaining session lifetime for follow-up wait
+          const nowElapsed = Date.now() - (this.sessionStartTimes.get(taskId) || Date.now());
+          const maxWaitMs = Math.min(this.idleTimeoutMs, Math.max(0, this.maxSessionDurationMs - nowElapsed));
+
+          if (maxWaitMs <= 30_000) {
+            await this.emitAndLog({
+              type: "status",
+              taskId,
+              status: "running",
+              message: "Session approaching 1-hour microVM limit. Finalizing task.",
+              timestamp: Date.now(),
+            });
+            break;
+          }
+
+          // 1. Check if user already queued a prompt during turn execution!
+          const queuedList = this.pendingPrompts.get(taskId) || [];
+          if (queuedList.length > 0) {
+            const nextPrompt = queuedList.shift()!;
+            await this.repo.updateTask(taskId, { queuedPrompt: undefined });
+            await this.emitAndLog({
+              type: "status",
+              taskId,
+              status: "running",
+              message: `Dispatching queued follow-up prompt immediately: "${nextPrompt.slice(0, 80)}"`,
+              timestamp: Date.now(),
+            });
+            turn++;
+            currentPrompt = nextPrompt;
+            continue;
+          }
+
+          // 2. Otherwise enter warm idle state for up to 10 minutes
+          const warmExpiresAt = new Date(Date.now() + maxWaitMs).toISOString();
+          await this.repo.updateTask(taskId, {
+            status: "waiting_input",
+            warmExpiresAt,
+          });
+          await this.updateStatus(
+            taskId,
+            "waiting_input",
+            `Sandbox warm for ${Math.round(maxWaitMs / 60000)}m. Enter follow-up prompt or finish.`,
+          );
+
+          const followUpPrompt = await this.waitForFollowUp(taskId, maxWaitMs);
+
+          if (controller.signal.aborted) {
+            break;
+          }
+
+          if (followUpPrompt) {
+            turn++;
+            currentPrompt = followUpPrompt;
+            await this.repo.updateTask(taskId, { warmExpiresAt: undefined });
+            continue;
+          } else {
+            // User requested finish or warm idle window expired
+            break;
+          }
+        } else {
+          // Agent returned non-zero exit code
+          const errorMsg = result.stderr.trim() || `Agent process exited with code ${result.exitCode}`;
+          await this.repo.updateTask(taskId, {
+            status: "failed",
+            error: errorMsg,
+            completedAt: new Date().toISOString(),
+            tokenUsage: cumulativeUsage,
+          });
+          await this.emitAndLog({
+            type: "status",
+            taskId,
+            status: "failed",
+            message: errorMsg,
+            timestamp: Date.now(),
+          });
+          await this.emitAndLog({
+            type: "error",
+            taskId,
+            message: errorMsg,
+            timestamp: Date.now(),
+          });
+          return;
+        }
+      }
+
+      // Reached when multi-turn loop completes cleanly
+      if (!controller.signal.aborted) {
         const completedAt = new Date().toISOString();
         await this.repo.updateTask(taskId, {
           status: "completed",
           completedAt,
           pullRequestUrl,
-          tokenUsage,
+          tokenUsage: {
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            totalTokens: totalInputTokens + totalOutputTokens,
+            estimatedCostUsd: totalCostUsd,
+          },
+          warmExpiresAt: undefined,
         });
 
         await this.emitAndLog({
@@ -413,39 +607,22 @@ export class TaskWorker {
           taskId,
           status: "completed",
           message: pullRequestUrl
-            ? `Agent finished execution and opened PR: ${pullRequestUrl}`
-            : "Agent finished execution successfully",
+            ? `Task completed (${turn} turn${turn > 1 ? "s" : ""}). PR: ${pullRequestUrl}`
+            : `Task completed (${turn} turn${turn > 1 ? "s" : ""}).`,
           timestamp: Date.now(),
         });
 
         await this.emitAndLog({
           type: "done",
           taskId,
-          summary: "Agent completed task",
+          summary: `Task finished successfully across ${turn} turn${turn > 1 ? "s" : ""}`,
           pullRequestUrl,
-          tokenUsage,
-          timestamp: Date.now(),
-        });
-      } else {
-        const errorMsg = result.stderr.trim() || `Agent process exited with code ${result.exitCode}`;
-        await this.repo.updateTask(taskId, {
-          status: "failed",
-          error: errorMsg,
-          completedAt: new Date().toISOString(),
-        });
-
-        await this.emitAndLog({
-          type: "status",
-          taskId,
-          status: "failed",
-          message: errorMsg,
-          timestamp: Date.now(),
-        });
-
-        await this.emitAndLog({
-          type: "error",
-          taskId,
-          message: errorMsg,
+          tokenUsage: {
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            totalTokens: totalInputTokens + totalOutputTokens,
+            estimatedCostUsd: totalCostUsd,
+          },
           timestamp: Date.now(),
         });
       }
@@ -496,6 +673,14 @@ export class TaskWorker {
       });
     } finally {
       clearTimeout(timeoutHandle);
+      const idleTimer = this.idleTimers.get(taskId);
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        this.idleTimers.delete(taskId);
+      }
+      this.promptResolvers.delete(taskId);
+      this.pendingPrompts.delete(taskId);
+      this.sessionStartTimes.delete(taskId);
       this.activeControllers.delete(taskId);
       this.activeSandboxes.delete(taskId);
 
@@ -511,6 +696,19 @@ export class TaskWorker {
   }
 
   public cancel(taskId: string): boolean {
+    const timer = this.idleTimers.get(taskId);
+    if (timer) {
+      clearTimeout(timer);
+      this.idleTimers.delete(taskId);
+    }
+    const resolver = this.promptResolvers.get(taskId);
+    if (resolver) {
+      this.promptResolvers.delete(taskId);
+      resolver(null);
+    }
+    this.pendingPrompts.delete(taskId);
+    this.sessionStartTimes.delete(taskId);
+
     const controller = this.activeControllers.get(taskId);
     if (controller) {
       controller.abort();

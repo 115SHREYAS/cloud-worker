@@ -67,6 +67,7 @@ async function bootstrap() {
     repo,
     eventBus,
     queue,
+    worker,
     tokenManager,
   });
 
