@@ -2,7 +2,7 @@ import type { StreamEvent, Task, TaskStatus, CreateTaskInput, GitHubInstallation
 import type { AgentProvider } from "@cloud-worker/sandbox";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { eq, desc, asc, inArray, and } from "drizzle-orm";
+import { eq, desc, asc, inArray, and, or } from "drizzle-orm";
 import {
   users,
   tasks,
@@ -422,34 +422,87 @@ export class DrizzleTaskRepository implements TaskRepository {
 
   async upsertUser(user: Omit<User, "createdAt" | "updatedAt">): Promise<User> {
     const now = new Date();
-    const inserted = await this.db
-      .insert(users)
-      .values({
-        id: user.id,
-        githubId: user.githubId,
-        username: user.username,
-        email: user.email,
-        avatarUrl: user.avatarUrl,
-        defaultModel: user.defaultModel,
-        defaultAuthMode: user.defaultAuthMode,
-        onboardingCompleted: user.onboardingCompleted,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: users.githubId,
-        set: {
+
+    // Check if an existing record matches either githubId or id
+    const existing = await this.db
+      .select()
+      .from(users)
+      .where(or(eq(users.githubId, user.githubId), eq(users.id, user.id)))
+      .limit(1);
+
+    if (existing.length > 0 && existing[0]) {
+      const match = existing[0];
+      const updated = await this.db
+        .update(users)
+        .set({
+          githubId: user.githubId,
           username: user.username,
           email: user.email,
           avatarUrl: user.avatarUrl,
+          defaultModel: user.defaultModel ?? match.defaultModel,
+          defaultAuthMode: user.defaultAuthMode ?? match.defaultAuthMode,
+          onboardingCompleted: user.onboardingCompleted ?? match.onboardingCompleted,
           updatedAt: now,
-        },
-      })
-      .returning();
+        })
+        .where(eq(users.id, match.id))
+        .returning();
 
-    const first = inserted[0];
-    if (!first) throw new Error("Failed to upsert user");
-    return mapRowToUser(first);
+      const first = updated[0];
+      if (!first) throw new Error("Failed to update existing user");
+      return mapRowToUser(first);
+    }
+
+    try {
+      const inserted = await this.db
+        .insert(users)
+        .values({
+          id: user.id,
+          githubId: user.githubId,
+          username: user.username,
+          email: user.email,
+          avatarUrl: user.avatarUrl,
+          defaultModel: user.defaultModel,
+          defaultAuthMode: user.defaultAuthMode,
+          onboardingCompleted: user.onboardingCompleted,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+
+      const first = inserted[0];
+      if (!first) throw new Error("Failed to upsert user");
+      return mapRowToUser(first);
+    } catch (err) {
+      // In case of concurrent race condition, fall back to update
+      const retry = await this.db
+        .select()
+        .from(users)
+        .where(or(eq(users.githubId, user.githubId), eq(users.id, user.id)))
+        .limit(1);
+
+      if (retry.length > 0 && retry[0]) {
+        const match = retry[0];
+        const updated = await this.db
+          .update(users)
+          .set({
+            githubId: user.githubId,
+            username: user.username,
+            email: user.email,
+            avatarUrl: user.avatarUrl,
+            defaultModel: user.defaultModel ?? match.defaultModel,
+            defaultAuthMode: user.defaultAuthMode ?? match.defaultAuthMode,
+            onboardingCompleted: user.onboardingCompleted ?? match.onboardingCompleted,
+            updatedAt: now,
+          })
+          .where(eq(users.id, match.id))
+          .returning();
+
+        const first = updated[0];
+        if (first) return mapRowToUser(first);
+      }
+
+      throw err;
+    }
   }
 
   async updateUser(id: string, updates: Partial<User>): Promise<User> {
@@ -659,14 +712,18 @@ export class MemoryTaskRepository implements TaskRepository {
   }
 
   async upsertUser(user: Omit<User, "createdAt" | "updatedAt">): Promise<User> {
-    const existing = await this.getUserByGitHubId(user.githubId);
+    const existing = (await this.getUserByGitHubId(user.githubId)) || (await this.getUser(user.id));
     const now = new Date().toISOString();
     if (existing) {
       const updated: User = {
         ...existing,
+        githubId: user.githubId,
         username: user.username,
         email: user.email,
         avatarUrl: user.avatarUrl,
+        defaultModel: user.defaultModel ?? existing.defaultModel,
+        defaultAuthMode: user.defaultAuthMode ?? existing.defaultAuthMode,
+        onboardingCompleted: user.onboardingCompleted ?? existing.onboardingCompleted,
         updatedAt: now,
       };
       this.users.set(existing.id, updated);

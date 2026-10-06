@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 
 export interface SessionPayload {
   sub: string;
+  githubId?: number;
   username: string;
   email: string;
   avatarUrl: string;

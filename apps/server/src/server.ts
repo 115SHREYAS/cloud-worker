@@ -486,7 +486,8 @@ export function createServer(options: ServerOptions) {
             const email = primaryEmail || `${ghUser.login}@users.noreply.github.com`;
             const userId = `usr_${ghUser.id}`;
 
-            const existingUser = await repo.getUserByGitHubId(ghUser.id);
+            const existingUser =
+              (await repo.getUserByGitHubId(ghUser.id)) || (await repo.getUser(userId));
             const user = await repo.upsertUser({
               id: existingUser ? existingUser.id : userId,
               githubId: ghUser.id,
@@ -526,6 +527,7 @@ export function createServer(options: ServerOptions) {
 
             const sessionToken = createSessionToken({
               sub: user.id,
+              githubId: user.githubId,
               username: user.username,
               email: user.email,
               avatarUrl: user.avatarUrl,
@@ -560,7 +562,8 @@ export function createServer(options: ServerOptions) {
           const githubId = Math.abs(username.split("").reduce((acc, c) => (acc << 5) - acc + c.charCodeAt(0), 0)) || 10001;
           const avatarUrl = `https://avatars.githubusercontent.com/u/${githubId}?v=4`;
 
-          const existingUser = await repo.getUserByGitHubId(githubId);
+          const existingUser =
+            (await repo.getUserByGitHubId(githubId)) || (await repo.getUser(`usr_${githubId}`));
           const user = await repo.upsertUser({
             id: existingUser ? existingUser.id : `usr_${githubId}`,
             githubId,
@@ -594,6 +597,7 @@ export function createServer(options: ServerOptions) {
 
           const sessionToken = createSessionToken({
             sub: user.id,
+            githubId: user.githubId,
             username: user.username,
             email: user.email,
             avatarUrl: user.avatarUrl,
@@ -618,10 +622,19 @@ export function createServer(options: ServerOptions) {
           let user = await repo.getUser(session.sub);
           if (!user) {
             // Restore user in-memory record if server was restarted with active JWT cookie
-            const githubId =
-              Math.abs(
-                session.username.split("").reduce((acc, c) => (acc << 5) - acc + c.charCodeAt(0), 0),
-              ) || 10001;
+            let githubId = session.githubId;
+            if (!githubId && session.sub.startsWith("usr_")) {
+              const parsed = parseInt(session.sub.slice(4), 10);
+              if (!Number.isNaN(parsed) && parsed > 0) {
+                githubId = parsed;
+              }
+            }
+            if (!githubId) {
+              githubId =
+                Math.abs(
+                  session.username.split("").reduce((acc, c) => (acc << 5) - acc + c.charCodeAt(0), 0),
+                ) || 10001;
+            }
             user = await repo.upsertUser({
               id: session.sub,
               githubId,
