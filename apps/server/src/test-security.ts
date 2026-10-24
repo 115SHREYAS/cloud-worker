@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { RateLimiter } from "./security/rate-limiter.ts";
 import { EnvironmentSchema, loadConfig } from "./config/env.ts";
 import { SandboxScavenger } from "./queue/sandbox-cleaner.ts";
-import { MemoryTaskRepository } from "./db/repository.ts";
+import { MemoryTaskRepository, createTaskRepository } from "./db/repository.ts";
 import { MemoryEventBus } from "./events/event-bus.ts";
 import { DirectTaskQueue } from "./queue/task-queue.ts";
 import { TaskWorker } from "./queue/task-worker.ts";
@@ -286,6 +286,29 @@ describe("Phase 6 Security & Hardening Controls", () => {
       } else {
         process.env.OPENAI_API_KEY = previousKey;
       }
+    }
+  });
+
+  it("refuses the in-memory database fallback in production", async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousDbUrl = process.env.DATABASE_URL;
+
+    try {
+      delete process.env.DATABASE_URL;
+
+      // Production: missing DATABASE_URL must abort boot, never silently downgrade
+      process.env.NODE_ENV = "production";
+      await expect(createTaskRepository()).rejects.toThrow(/DATABASE_URL/);
+
+      // Development: same condition falls back to the in-memory repository
+      process.env.NODE_ENV = "development";
+      const repo = await createTaskRepository();
+      expect(repo).toBeInstanceOf(MemoryTaskRepository);
+      await repo.close();
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+      if (previousDbUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previousDbUrl;
     }
   });
 

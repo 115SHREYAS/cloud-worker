@@ -758,13 +758,21 @@ export class MemoryTaskRepository implements TaskRepository {
 
 export async function createTaskRepository(connectionString?: string): Promise<TaskRepository> {
   const url = connectionString ?? process.env.DATABASE_URL;
+  const isProduction = process.env.NODE_ENV === "production";
+
   if (!url) {
+    if (isProduction) {
+      throw new Error(
+        "[db] DATABASE_URL is required in production — refusing to start with in-memory " +
+          "storage that loses all data on restart and keeps credentials in plaintext.",
+      );
+    }
     console.log("[db] DATABASE_URL not set. Using MemoryTaskRepository.");
     return new MemoryTaskRepository();
   }
 
   try {
-    const testClient = postgres(url, { max: 1, connect_timeout: 2 });
+    const testClient = postgres(url, { max: 1, connect_timeout: 10 });
     await testClient`SELECT 1`;
     await testClient.end();
 
@@ -772,6 +780,12 @@ export async function createTaskRepository(connectionString?: string): Promise<T
     console.log("[db] Connected to PostgreSQL with Drizzle ORM.");
     return repo;
   } catch (err) {
+    if (isProduction) {
+      throw new Error(
+        `[db] Cannot reach PostgreSQL in production — refusing to fall back to in-memory ` +
+          `storage (plaintext credentials): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     console.warn("[db] PostgreSQL connection failed. Falling back to MemoryTaskRepository:", err);
     return new MemoryTaskRepository();
   }
