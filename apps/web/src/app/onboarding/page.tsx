@@ -24,7 +24,6 @@ import {
   type ProviderAuthFlow,
 } from "../../lib/api";
 import {
-  Cpu,
   Terminal,
   GitPullRequest,
   Check,
@@ -91,7 +90,6 @@ function OnboardingWizard() {
   const [credentialValue, setCredentialValue] = useState("");
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [credentialError, setCredentialError] = useState<string | null>(null);
-  const [copiedCommand, setCopiedCommand] = useState(false);
   const [detectedAuths, setDetectedAuths] = useState<DetectedProviderAuth[]>([]);
   const [isImportingLocal, setIsImportingLocal] = useState(false);
   const [activeFlow, setActiveFlow] = useState<ProviderAuthFlow | null>(null);
@@ -104,14 +102,6 @@ function OnboardingWizard() {
       navigator.clipboard.writeText(code);
       setCopiedCode(true);
       setTimeout(() => setCopiedCode(false), 2000);
-    }
-  }, []);
-
-  const handleCopyCommand = useCallback((cmd: string) => {
-    if (typeof navigator !== "undefined" && navigator.clipboard) {
-      navigator.clipboard.writeText(cmd);
-      setCopiedCommand(true);
-      setTimeout(() => setCopiedCommand(false), 2000);
     }
   }, []);
 
@@ -243,7 +233,7 @@ function OnboardingWizard() {
   // Auto-refresh repositories when transitioning to step 2+
   useEffect(() => {
     if (currentStep < 2) return;
-    refreshGitHubState();
+    void Promise.resolve().then(refreshGitHubState);
   }, [currentStep, refreshGitHubState]);
 
   // Window focus listener: auto-refresh repositories if user returned from installing GitHub App

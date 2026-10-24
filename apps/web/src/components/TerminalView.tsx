@@ -102,6 +102,7 @@ export function TerminalView({ buffer, onClear, status }: TerminalViewProps) {
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Write new chunks incrementally

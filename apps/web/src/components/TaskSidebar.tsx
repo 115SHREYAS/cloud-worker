@@ -1,7 +1,7 @@
 "use client";
 
 import type { Task, TaskStatus, UserPublicProfile } from "@cloud-worker/shared";
-import { Plus, KeyRound, RefreshCw, Cpu, Compass, LogOut, X } from "lucide-react";
+import { Plus, KeyRound, RefreshCw, Compass, LogOut, X } from "lucide-react";
 
 interface TaskSidebarProps {
   tasks: Task[];

@@ -46,7 +46,6 @@ export function AuthSettingsModal({ isOpen, onClose }: AuthSettingsModalProps) {
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
-  const [copiedCommand, setCopiedCommand] = useState(false);
 
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -56,9 +55,6 @@ export function AuthSettingsModal({ isOpen, onClose }: AuthSettingsModalProps) {
       if (isCode) {
         setCopiedCode(true);
         setTimeout(() => setCopiedCode(false), 2000);
-      } else {
-        setCopiedCommand(true);
-        setTimeout(() => setCopiedCommand(false), 2000);
       }
     }
   };
@@ -81,7 +77,25 @@ export function AuthSettingsModal({ isOpen, onClose }: AuthSettingsModalProps) {
   useEffect(() => {
     if (!isOpen) return;
 
-    refreshStatus();
+    let ignore = false;
+    async function init() {
+      try {
+        const [codex, claude, detected] = await Promise.all([
+          fetchAuthStatus("codex").catch(() => ({ configured: false })),
+          fetchAuthStatus("claude").catch(() => ({ configured: false })),
+          detectLocalProviderCredentials().catch(() => []),
+        ]);
+        if (!ignore) {
+          setCodexConfigured(codex.configured);
+          setClaudeConfigured(claude.configured);
+          setDetectedAuths(detected);
+        }
+      } catch {
+        // Ignore
+      }
+    }
+
+    void init();
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -89,6 +103,7 @@ export function AuthSettingsModal({ isOpen, onClose }: AuthSettingsModalProps) {
     window.addEventListener("keydown", handleKeyDown);
 
     return () => {
+      ignore = true;
       window.removeEventListener("keydown", handleKeyDown);
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);

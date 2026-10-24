@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import {
   AVAILABLE_MODELS,
   getAvailableModels,
@@ -108,11 +108,11 @@ export function T3TaskComposer({
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
 
   // Keep harnessAuthMode in sync if defaultAuthMode prop updates
-  useEffect(() => {
-    if (defaultAuthMode) {
-      setHarnessAuthMode(defaultAuthMode === "api_key" ? "api_key" : "subscription");
-    }
-  }, [defaultAuthMode]);
+  const [prevDefaultAuthMode, setPrevDefaultAuthMode] = useState(defaultAuthMode);
+  if (defaultAuthMode && defaultAuthMode !== prevDefaultAuthMode) {
+    setPrevDefaultAuthMode(defaultAuthMode);
+    setHarnessAuthMode(defaultAuthMode === "api_key" ? "api_key" : "subscription");
+  }
 
   // Real Branches state
   const [branches, setBranches] = useState<GitHubBranch[]>([]);
@@ -178,19 +178,17 @@ export function T3TaskComposer({
     return () => {
       ignore = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [harness, defaultAuthMode]);
 
   // Fetch real branches from GitHub whenever selectedRepo changes
   useEffect(() => {
-    if (!selectedRepo) {
-      setBranches([]);
-      return;
-    }
+    if (!selectedRepo) return;
 
     let ignore = false;
-    setIsFetchingBranches(true);
 
     async function loadBranches() {
+      setIsFetchingBranches(true);
       try {
         const realBranches = await fetchGitHubBranches(
           selectedRepo!.owner,

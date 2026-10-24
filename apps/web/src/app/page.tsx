@@ -6,7 +6,6 @@ import type { Task, UserPublicProfile, CreateTaskInput } from "@cloud-worker/sha
 import {
   fetchTasks,
   getCurrentUser,
-  logout,
   createTask,
   fetchGitHubRepositories,
 } from "../lib/api";
@@ -20,7 +19,6 @@ import { TaskWorkspace } from "../components/TaskWorkspace";
 import { AuthSettingsModal } from "../components/AuthSettingsModal";
 import { LandingWalkthrough } from "../components/LandingWalkthrough";
 import {
-  Loader2,
   Plus,
   GitBranch,
   Settings,
@@ -100,19 +98,6 @@ export default function DashboardPage() {
       ignore = true;
     };
   }, [router, loadTasks, loadRepositories]);
-
-  const handleLogout = async () => {
-    try {
-      await logout();
-      setCurrentUser(null);
-      setTasks([]);
-      setActiveTaskId(null);
-      setSelectedRepo(null);
-    } catch (err) {
-      console.error("Failed to log out:", err);
-      setCurrentUser(null);
-    }
-  };
 
   const handleWalkthrough = () => {
     router.push("/onboarding");
