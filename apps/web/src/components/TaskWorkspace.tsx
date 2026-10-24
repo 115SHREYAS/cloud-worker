@@ -5,11 +5,10 @@ import type { Task, TaskStatus } from "@cloud-worker/shared";
 import { useTaskStream } from "../hooks/useTaskStream";
 import { sendFollowUpPrompt, finishTaskSession } from "../lib/api";
 import { TerminalView } from "./TerminalView";
-import { AgentTimeline } from "./AgentTimeline";
 import { DiffViewer } from "./DiffViewer";
+import { AgentStreamView } from "./AgentStreamView";
 import {
   Terminal as TerminalIcon,
-  Brain,
   FileCode,
   StopCircle,
   GitBranch,
@@ -28,16 +27,13 @@ interface TaskWorkspaceProps {
   onRefresh?: () => void;
 }
 
-type TabType = "terminal" | "timeline" | "diff";
+type TabType = "stream" | "terminal" | "diff";
 
 function useWarmCountdown(expiresAt?: string, isWaiting?: boolean) {
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!isWaiting) {
-      setSecondsLeft(null);
-      return;
-    }
+    if (!isWaiting) return;
 
     const targetTime = expiresAt ? new Date(expiresAt).getTime() : Date.now() + 600_000;
 
@@ -51,7 +47,7 @@ function useWarmCountdown(expiresAt?: string, isWaiting?: boolean) {
     return () => clearInterval(timer);
   }, [expiresAt, isWaiting]);
 
-  return secondsLeft;
+  return isWaiting ? secondsLeft : null;
 }
 
 function FollowUpComposer({
@@ -145,7 +141,7 @@ function FollowUpComposer({
                   Turn {currentTurn + 1} Queued
                 </span>
                 <span className="text-zinc-200 text-xs font-mono truncate">
-                  "{queuedPrompt}"
+                  &quot;{queuedPrompt}&quot;
                 </span>
               </div>
               <span className="text-[11px] text-zinc-400 font-sans shrink-0 hidden sm:inline">
@@ -257,7 +253,7 @@ function FollowUpComposer({
 }
 
 export function TaskWorkspace({ task, onRefresh }: TaskWorkspaceProps) {
-  const [activeTab, setActiveTab] = useState<TabType>("terminal");
+  const [activeTab, setActiveTab] = useState<TabType>("stream");
   const {
     status,
     events,
@@ -384,6 +380,22 @@ export function TaskWorkspace({ task, onRefresh }: TaskWorkspaceProps) {
         <div className="flex items-center gap-1.5 sm:gap-2 pt-2 border-t border-[#1c1d25] overflow-x-auto no-scrollbar">
           <button
             type="button"
+            onClick={() => setActiveTab("stream")}
+            className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer shrink-0 ${
+              activeTab === "stream"
+                ? "bg-[#181a24] text-zinc-100 border border-[#2c2f3e] shadow-xs"
+                : "text-zinc-400 hover:text-zinc-200 hover:bg-[#12131b]"
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+            <span>Agent stream</span>
+            {status === "running" && (
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+            )}
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab("terminal")}
             className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer shrink-0 ${
               activeTab === "terminal"
@@ -391,24 +403,8 @@ export function TaskWorkspace({ task, onRefresh }: TaskWorkspaceProps) {
                 : "text-zinc-400 hover:text-zinc-200 hover:bg-[#12131b]"
             }`}
           >
-            <TerminalIcon className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-            <span>Terminal stream</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("timeline")}
-            className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer shrink-0 ${
-              activeTab === "timeline"
-                ? "bg-[#181a24] text-zinc-100 border border-[#2c2f3e] shadow-xs"
-                : "text-zinc-400 hover:text-zinc-200 hover:bg-[#12131b]"
-            }`}
-          >
-            <Brain className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-            <span>Agent reasoning</span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-zinc-800 text-zinc-300 font-mono">
-              {events.filter((e) => e.type !== "stdout" && e.type !== "stderr" && e.type !== "ping").length}
-            </span>
+            <TerminalIcon className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+            <span>Raw terminal</span>
           </button>
 
           <button
@@ -430,8 +426,22 @@ export function TaskWorkspace({ task, onRefresh }: TaskWorkspaceProps) {
       </div>
 
       {/* Tab Content Viewport */}
-      <div className="flex-1 p-2 sm:p-6 overflow-y-auto min-h-0 flex flex-col">
-        <div className={activeTab === "terminal" ? "flex-1 flex flex-col min-h-0" : "hidden"}>
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        {activeTab === "stream" && (
+          <AgentStreamView
+            taskId={task.id}
+            task={task}
+            status={status}
+            currentTurn={currentTurn}
+            events={events}
+            terminalBuffer={terminalBuffer}
+            diff={currentDiff}
+            pullRequestUrl={effectivePullRequestUrl}
+            onSwitchTab={(t) => setActiveTab(t)}
+          />
+        )}
+
+        <div className={activeTab === "terminal" ? "flex-1 flex flex-col min-h-0 p-2 sm:p-6 overflow-y-auto" : "hidden"}>
           <TerminalView
             buffer={terminalBuffer}
             onClear={clearTerminal}
@@ -439,15 +449,11 @@ export function TaskWorkspace({ task, onRefresh }: TaskWorkspaceProps) {
           />
         </div>
 
-        {activeTab === "timeline" && (
-          <div className="max-w-4xl mx-auto py-2">
-            <AgentTimeline events={events} />
-          </div>
-        )}
-
         {activeTab === "diff" && (
-          <div className="max-w-5xl mx-auto py-2">
-            <DiffViewer diff={currentDiff} />
+          <div className="flex-1 overflow-y-auto p-2 sm:p-6">
+            <div className="max-w-5xl mx-auto py-2">
+              <DiffViewer diff={currentDiff} />
+            </div>
           </div>
         )}
       </div>

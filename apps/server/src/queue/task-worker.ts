@@ -1,6 +1,6 @@
 import type { TaskRepository, TaskRecord } from "../db/repository.ts";
 import type { EventBus } from "../events/event-bus.ts";
-import type { StreamEvent, TaskStatus, TokenUsage } from "@cloud-worker/shared";
+import type { StreamEvent, TaskStatus, TokenUsage, AgentToolName } from "@cloud-worker/shared";
 import { SandboxManager, AgentSession, initWorkspace, type AgentProvider } from "@cloud-worker/sandbox";
 import {
   createPullRequest,
@@ -45,6 +45,263 @@ function estimateTokenUsage(stdout: string, stderr: string, prompt: string): Tok
     outputTokens: completionTokens,
     totalTokens,
     estimatedCostUsd,
+  };
+}
+
+function createStdoutEventParser(
+  taskId: string,
+  emit: (event: StreamEvent) => Promise<void>,
+) {
+  let lineBuffer = "";
+  let activeToolCallId: string | null = null;
+  let activeToolName: AgentToolName | null = null;
+  let activeToolOutput = "";
+  let activeExitCode = 0;
+  let isInsideCodexThought = false;
+  let codexThoughtBuffer = "";
+
+  const stripAnsi = (text: string) =>
+    text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+
+  const cleanCommandOutput = (output: string) => {
+    return output
+      .split("\n")
+      .filter((line) => {
+        const t = line.trim();
+        if (t.startsWith("find: ‘../") || t.startsWith("find: '../")) return false;
+        if (t.includes("Permission denied") && (t.includes("/run/") || t.includes("/proc/") || t.includes("/sys/"))) return false;
+        return true;
+      })
+      .join("\n")
+      .trim();
+  };
+
+  const flushToolResult = async () => {
+    if (activeToolCallId && activeToolName) {
+      await emit({
+        type: "tool_result",
+        taskId,
+        callId: activeToolCallId,
+        tool: activeToolName,
+        output: cleanCommandOutput(activeToolOutput),
+        exitCode: activeExitCode,
+        isError: activeExitCode !== 0,
+        timestamp: Date.now(),
+      });
+      activeToolCallId = null;
+      activeToolName = null;
+      activeToolOutput = "";
+      activeExitCode = 0;
+    }
+  };
+
+  const flushThought = async () => {
+    if (codexThoughtBuffer.trim()) {
+      const thought = codexThoughtBuffer.trim();
+      codexThoughtBuffer = "";
+      if (
+        !thought.startsWith("Reading additional input") &&
+        !thought.startsWith("OpenAI Codex v") &&
+        !thought.startsWith("Workflow note:") &&
+        !thought.startsWith("tokens used") &&
+        !thought.startsWith("Wrote the commit title")
+      ) {
+        await emit({
+          type: "thought",
+          taskId,
+          thought,
+          timestamp: Date.now(),
+        });
+      }
+    }
+  };
+
+  return {
+    async feed(chunk: string) {
+      lineBuffer += chunk;
+      const lines = lineBuffer.split("\n");
+      lineBuffer = lines.pop() || "";
+
+      for (let i = 0; i < lines.length; i++) {
+        const rawLine = lines[i] ?? "";
+        const line = stripAnsi(rawLine).trim();
+        if (!line) {
+          if (isInsideCodexThought) {
+            await flushThought();
+            isInsideCodexThought = false;
+          }
+          continue;
+        }
+
+        // Skip MicroVM decor and harness banners
+        if (
+          line.includes("┌──") ||
+          line.includes("└──") ||
+          line.includes("Cloud Worker MicroVM") ||
+          line.startsWith("Reading additional input") ||
+          line.startsWith("OpenAI Codex v") ||
+          line.startsWith("workdir:") ||
+          line.startsWith("model:") ||
+          line.startsWith("provider:") ||
+          line.startsWith("approval:") ||
+          line.startsWith("sandbox:") ||
+          line.startsWith("reasoning effort:") ||
+          line.startsWith("reasoning summaries:") ||
+          line.startsWith("session id:") ||
+          line === "--------" ||
+          line === "user" ||
+          line.startsWith("Workflow note:") ||
+          line === "---" ||
+          line === "tokens used" ||
+          line.startsWith("Wrote the commit title to /tmp/")
+        ) {
+          continue;
+        }
+
+        // 1. Detect Codex CLI "exec" tool call
+        if (line === "exec") {
+          await flushToolResult();
+          await flushThought();
+          isInsideCodexThought = false;
+
+          i++;
+          const nextRaw = lines[i] ?? "";
+          let cmdLine = stripAnsi(nextRaw).trim();
+          const matchIn = cmdLine.match(/^(.*?)\s+in\s+\/workspace$/);
+          if (matchIn && matchIn[1]) cmdLine = matchIn[1];
+          const matchBash = cmdLine.match(/^\/bin\/bash -lc ["'](.*)["']$/);
+          if (matchBash && matchBash[1]) cmdLine = matchBash[1];
+
+          activeToolCallId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          activeToolName = "bash";
+          activeExitCode = 0;
+          await emit({
+            type: "tool_call",
+            taskId,
+            callId: activeToolCallId,
+            tool: "bash",
+            args: { command: cmdLine },
+            timestamp: Date.now(),
+          });
+          continue;
+        }
+
+        // Check exit code for Codex command
+        if (activeToolCallId && line.match(/^(exited \d+|succeeded) in \d+ms:/)) {
+          const exitMatch = line.match(/^exited (\d+)/);
+          if (exitMatch && exitMatch[1]) {
+            activeExitCode = parseInt(exitMatch[1], 10);
+          }
+          continue;
+        }
+
+        // 2. Detect Codex assistant narrative / thought marker
+        if (line === "codex") {
+          await flushToolResult();
+          await flushThought();
+          isInsideCodexThought = true;
+          continue;
+        }
+
+        // Detect Claude / Codex tool markers
+        if (
+          line.startsWith("⏺") ||
+          line.startsWith("•") ||
+          line.match(/^(Running command|Executing|Reading file|Editing file|Searching for):/i)
+        ) {
+          await flushToolResult();
+
+          const content = line.replace(/^[⏺•]\s*/, "").trim();
+
+          if (content.match(/^(bash|running command|executing):\s*/i)) {
+            const cmd = content.replace(/^(bash|running command|executing):\s*/i, "").trim();
+            activeToolCallId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            activeToolName = "bash";
+            await emit({
+              type: "tool_call",
+              taskId,
+              callId: activeToolCallId,
+              tool: "bash",
+              args: { command: cmd },
+              timestamp: Date.now(),
+            });
+            continue;
+          }
+
+          if (content.match(/^(read file|reading|read|view):\s*/i)) {
+            const path = content.replace(/^(read file|reading|read|view):\s*/i, "").trim();
+            const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            await emit({
+              type: "tool_call",
+              taskId,
+              callId,
+              tool: "read_file",
+              args: { path },
+              timestamp: Date.now(),
+            });
+            continue;
+          }
+
+          if (content.match(/^(edit file|edit|write file|writing|modified):\s*/i)) {
+            const path = content.replace(/^(edit file|edit|write file|writing|modified):\s*/i, "").trim();
+            const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            await emit({
+              type: "tool_call",
+              taskId,
+              callId,
+              tool: "write_file",
+              args: { path },
+              timestamp: Date.now(),
+            });
+            continue;
+          }
+
+          if (content.match(/^(grep|glob|search|searching for):\s*/i)) {
+            const q = content.replace(/^(grep|glob|search|searching for):\s*/i, "").trim();
+            const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            await emit({
+              type: "tool_call",
+              taskId,
+              callId,
+              tool: "list_dir",
+              args: { path: q },
+              timestamp: Date.now(),
+            });
+            continue;
+          }
+        }
+
+        // Detect thinking
+        if (line.match(/^(thinking(\.\.\.|:)?|thought:)/i)) {
+          await flushToolResult();
+          const thoughtText = line.replace(/^(thinking(\.\.\.|:)?|thought:)\s*/i, "").trim();
+          if (thoughtText) {
+            await emit({
+              type: "thought",
+              taskId,
+              thought: thoughtText,
+              timestamp: Date.now(),
+            });
+          }
+          continue;
+        }
+
+        // If inside codex narrative / thought
+        if (isInsideCodexThought) {
+          codexThoughtBuffer += rawLine + "\n";
+          continue;
+        }
+
+        // If accumulating output for active tool
+        if (activeToolCallId) {
+          activeToolOutput += rawLine + "\n";
+        }
+      }
+    },
+    async end() {
+      await flushToolResult();
+      await flushThought();
+    },
   };
 }
 
@@ -302,6 +559,10 @@ export class TaskWorker {
           timestamp: Date.now(),
         });
 
+        const stdoutParser = createStdoutEventParser(taskId, async (event) => {
+          await this.emitAndLog(event);
+        });
+
         const session = AgentSession.create(sandbox, {
           provider,
           model: task.model,
@@ -319,6 +580,7 @@ export class TaskWorker {
               data,
               timestamp: Date.now(),
             });
+            await stdoutParser.feed(data).catch(() => {});
           },
           onStderr: async (data) => {
             await this.emitAndLog({
@@ -327,10 +589,12 @@ export class TaskWorker {
               data,
               timestamp: Date.now(),
             });
+            await stdoutParser.feed(data).catch(() => {});
           },
         });
 
         const result = await session.run(currentPrompt, { isContinue: turn > 1 });
+        await stdoutParser.end().catch(() => {});
 
         // 7. Persist refreshed subscription tokens if updated by CLI
         if (result.refreshedAuthJson) {
