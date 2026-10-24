@@ -160,6 +160,24 @@ describe("User Authentication & Onboarding Controls", () => {
     }
   });
 
+  it("persists refreshed credentials under the owning user without clobbering the shared default account", async () => {
+    const repo = new MemoryTaskRepository();
+
+    await repo.saveAuthSession("codex", '{"token":"operator-default"}', "default", "subscription");
+    await repo.saveAuthSession("codex", '{"token":"user-a-original"}', "usr_a", "subscription");
+
+    // Simulates the worker persisting a CLI-refreshed token for user A's task:
+    // an explicit owner attribution must never touch another user's row.
+    await repo.saveAuthSession("codex", '{"token":"user-a-refreshed"}', "usr_a", "subscription");
+
+    const userA = await repo.getAuthSessionRecord("codex", "usr_a");
+    const sharedDefault = await repo.getAuthSessionRecord("codex", "default");
+
+    expect(userA?.authJson).toContain("user-a-refreshed");
+    expect(sharedDefault?.authJson).toContain("operator-default");
+    expect(sharedDefault?.authJson).not.toContain("user-a-refreshed");
+  });
+
   it("disables dev login in production deployments", async () => {
     const repo = new MemoryTaskRepository();
     const eventBus = new MemoryEventBus();

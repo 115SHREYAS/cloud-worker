@@ -441,7 +441,7 @@ export class TaskWorker {
 
       // 2. Determine agent provider and credentials
       const provider = this.resolveProvider(task.model);
-      const { authJson, apiKey } = await this.resolveCredentials(provider, task.userId);
+      const { authJson, apiKey, ownedByUser } = await this.resolveCredentials(provider, task.userId);
       if (!authJson && !apiKey) {
         const errorMsg =
           `No valid authentication credentials found for ${provider === "codex" ? "OpenAI Codex" : "Claude Code"}. ` +
@@ -596,9 +596,16 @@ export class TaskWorker {
         const result = await session.run(currentPrompt, { isContinue: turn > 1 });
         await stdoutParser.end().catch(() => {});
 
-        // 7. Persist refreshed subscription tokens if updated by CLI
-        if (result.refreshedAuthJson) {
-          await this.repo.saveAuthSession(provider, result.refreshedAuthJson);
+        // 7. Persist refreshed subscription tokens if updated by CLI. Only when the
+        // task ran on its owner's own credentials — otherwise persisting would copy
+        // another principal's refreshed token into the owner's (or "default") auth row.
+        if (result.refreshedAuthJson && ownedByUser && task.userId) {
+          await this.repo.saveAuthSession(
+            provider,
+            result.refreshedAuthJson,
+            task.userId,
+            apiKey ? "api_key" : "subscription",
+          );
           console.log(`[task-worker] Updated refreshed auth session for ${provider}`);
         }
 
@@ -1000,15 +1007,15 @@ export class TaskWorker {
   private async resolveCredentials(
     provider: AgentProvider,
     userId?: string,
-  ): Promise<{ authJson?: string; apiKey?: string }> {
+  ): Promise<{ authJson?: string; apiKey?: string; ownedByUser: boolean }> {
     // 1. Check stored auth session for the specific user in database
     if (userId) {
       const userRecord = await this.repo.getAuthSessionRecord(provider, userId);
       if (userRecord) {
         if (userRecord.authMode === "api_key") {
-          return { apiKey: userRecord.authJson };
+          return { apiKey: userRecord.authJson, ownedByUser: true };
         }
-        return { authJson: userRecord.authJson };
+        return { authJson: userRecord.authJson, ownedByUser: true };
       }
     }
 
@@ -1016,28 +1023,28 @@ export class TaskWorker {
     const storedRecord = await this.repo.getAuthSessionRecord(provider, "default");
     if (storedRecord) {
       if (storedRecord.authMode === "api_key") {
-        return { apiKey: storedRecord.authJson };
+        return { apiKey: storedRecord.authJson, ownedByUser: false };
       }
-      return { authJson: storedRecord.authJson };
+      return { authJson: storedRecord.authJson, ownedByUser: false };
     }
 
     // 3. Fallback to server environment variables
     if (provider === "codex") {
       if (process.env.CODEX_AUTH_JSON) {
-        return { authJson: process.env.CODEX_AUTH_JSON };
+        return { authJson: process.env.CODEX_AUTH_JSON, ownedByUser: false };
       }
       if (process.env.OPENAI_API_KEY) {
-        return { apiKey: process.env.OPENAI_API_KEY };
+        return { apiKey: process.env.OPENAI_API_KEY, ownedByUser: false };
       }
     } else {
       if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-        return { authJson: process.env.CLAUDE_CODE_OAUTH_TOKEN };
+        return { authJson: process.env.CLAUDE_CODE_OAUTH_TOKEN, ownedByUser: false };
       }
       if (process.env.CLAUDE_AUTH_JSON) {
-        return { authJson: process.env.CLAUDE_AUTH_JSON };
+        return { authJson: process.env.CLAUDE_AUTH_JSON, ownedByUser: false };
       }
       if (process.env.ANTHROPIC_API_KEY) {
-        return { apiKey: process.env.ANTHROPIC_API_KEY };
+        return { apiKey: process.env.ANTHROPIC_API_KEY, ownedByUser: false };
       }
     }
 
@@ -1053,14 +1060,14 @@ export class TaskWorker {
         const hostAuth = await fs.readFile(hostFilePath, "utf8");
         if (hostAuth.trim().length > 0) {
           await this.repo.saveAuthSession(provider, hostAuth, userId || "default", "subscription");
-          return { authJson: hostAuth };
+          return { authJson: hostAuth, ownedByUser: false };
         }
       }
     } catch (err) {
       console.warn(`[task-worker] Failed to load local host credentials for ${provider}:`, err);
     }
 
-    return {};
+    return { ownedByUser: false };
   }
 
   private async setupRepository(sandbox: SandboxManager, task: TaskRecord): Promise<void> {
