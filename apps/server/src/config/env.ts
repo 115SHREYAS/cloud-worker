@@ -42,6 +42,7 @@ export const EnvironmentSchema = z.object({
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
   GITHUB_APP_SLUG: z.string().optional(),
+  APP_URL: z.string().optional(),
   SESSION_SECRET: z.string().optional(),
   ENCRYPTION_KEY: z.string().optional(),
   CODEX_AUTH_JSON: z.string().optional(),

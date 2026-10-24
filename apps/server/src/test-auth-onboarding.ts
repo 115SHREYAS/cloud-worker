@@ -178,6 +178,35 @@ describe("User Authentication & Onboarding Controls", () => {
     expect(sharedDefault?.authJson).not.toContain("user-a-refreshed");
   });
 
+  it("builds the GitHub OAuth redirect from APP_URL when set", async () => {
+    const repo = new MemoryTaskRepository();
+    const eventBus = new MemoryEventBus();
+    const worker = new TaskWorker(repo, eventBus);
+    const queue = new DirectTaskQueue(worker);
+    const server = createServer({ port: 0, repo, eventBus, queue });
+    const baseUrl = `http://localhost:${server.port}`;
+
+    const previousAppUrl = process.env.APP_URL;
+    const previousClientId = process.env.GITHUB_CLIENT_ID;
+    process.env.APP_URL = "https://app.example.com/";
+    process.env.GITHUB_CLIENT_ID = "test-client-id";
+
+    try {
+      const res = await fetch(`${baseUrl}/api/auth/github`, { redirect: "manual" });
+      expect(res.status).toBe(302);
+      const location = res.headers.get("location") ?? "";
+      expect(location.startsWith("https://github.com/login/oauth/authorize")).toBe(true);
+      const redirectUri = decodeURIComponent(location.split("redirect_uri=")[1]?.split("&")[0] ?? "");
+      expect(redirectUri).toBe("https://app.example.com/api/auth/callback/github");
+    } finally {
+      if (previousAppUrl === undefined) delete process.env.APP_URL;
+      else process.env.APP_URL = previousAppUrl;
+      if (previousClientId === undefined) delete process.env.GITHUB_CLIENT_ID;
+      else process.env.GITHUB_CLIENT_ID = previousClientId;
+      server.stop();
+    }
+  });
+
   it("disables dev login in production deployments", async () => {
     const repo = new MemoryTaskRepository();
     const eventBus = new MemoryEventBus();

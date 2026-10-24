@@ -416,11 +416,17 @@ export function createServer(options: ServerOptions) {
           }
 
           const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+          // Deterministic public origin when APP_URL is set (e.g. https://app.yourdomain.com);
+          // falls back to proxy headers / request origin for local development
           const forwardedHost = req.headers.get("x-forwarded-host");
           const forwardedProto = req.headers.get("x-forwarded-proto") || "http";
-          const clientOrigin = forwardedHost
-            ? `${forwardedProto}://${forwardedHost}`
-            : (url.port === "3001" ? "http://localhost:3000" : url.origin);
+          const clientOrigin =
+            process.env.APP_URL?.replace(/\/+$/, "") ||
+            (forwardedHost
+              ? `${forwardedProto}://${forwardedHost}`
+              : url.port === "3001"
+                ? "http://localhost:3000"
+                : url.origin);
           const redirectUri = `${clientOrigin}/api/auth/callback/github`;
           const githubAuthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=read:user,user:email&state=${state}`;
 
@@ -438,11 +444,17 @@ export function createServer(options: ServerOptions) {
           const code = url.searchParams.get("code");
           const clientId = process.env.GITHUB_CLIENT_ID;
           const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+          // Deterministic public origin when APP_URL is set (e.g. https://app.yourdomain.com);
+          // falls back to proxy headers / request origin for local development
           const forwardedHost = req.headers.get("x-forwarded-host");
           const forwardedProto = req.headers.get("x-forwarded-proto") || "http";
-          const clientOrigin = forwardedHost
-            ? `${forwardedProto}://${forwardedHost}`
-            : (url.port === "3001" ? "http://localhost:3000" : url.origin);
+          const clientOrigin =
+            process.env.APP_URL?.replace(/\/+$/, "") ||
+            (forwardedHost
+              ? `${forwardedProto}://${forwardedHost}`
+              : url.port === "3001"
+                ? "http://localhost:3000"
+                : url.origin);
 
           if (!code || !clientId || !clientSecret) {
             return Response.redirect(`${clientOrigin}/login?error=missing_oauth_code`, 302);
