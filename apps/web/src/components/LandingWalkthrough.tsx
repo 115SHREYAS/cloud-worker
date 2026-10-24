@@ -1,19 +1,11 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import {
-  Cpu,
   Terminal,
   Shield,
   GitPullRequest,
-  Sparkles,
-  Loader2,
 } from "lucide-react";
-
-interface LandingWalkthroughProps {
-  onDevLogin: (username?: string) => Promise<void>;
-}
 
 function GitHubLogo({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -27,18 +19,7 @@ function GitHubLogo({ className = "w-4 h-4" }: { className?: string }) {
   );
 }
 
-export function LandingWalkthrough({ onDevLogin }: LandingWalkthroughProps) {
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-
-  const handleDevQuickstart = async () => {
-    setIsLoggingIn(true);
-    try {
-      await onDevLogin("developer");
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
+export function LandingWalkthrough() {
   return (
     <div className="flex min-h-screen w-full flex-col justify-between bg-black text-zinc-100 font-sans selection:bg-blue-500/20 selection:text-blue-300">
       {/* Top Header */}
@@ -50,21 +31,12 @@ export function LandingWalkthrough({ onDevLogin }: LandingWalkthroughProps) {
           </span>
         </div>
 
-        <div className="flex items-center gap-3">
-          <Link
-            href="/login"
-            className="text-xs font-medium text-zinc-400 hover:text-zinc-100 transition-colors px-3 py-1.5"
-          >
-            Log in
-          </Link>
-          <a
-            href="/api/auth/github"
-            className="inline-flex items-center gap-2 rounded-lg bg-zinc-100 px-3.5 py-1.5 text-xs font-medium text-black hover:bg-zinc-200 transition-colors"
-          >
-            <GitHubLogo className="h-3.5 w-3.5" />
-            <span>Sign in</span>
-          </a>
-        </div>
+        <Link
+          href="/login"
+          className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-3.5 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-100 transition-colors"
+        >
+          Sign in
+        </Link>
       </header>
 
       {/* Main Single-View Hero */}
@@ -72,7 +44,7 @@ export function LandingWalkthrough({ onDevLogin }: LandingWalkthroughProps) {
         {/* Status Pill */}
         <div className="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1 text-xs text-zinc-300 mb-6">
           <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
-          <span>Firecracker MicroVMs + In-VM Agent Harness</span>
+          <span>Firecracker microVM sandboxes</span>
         </div>
 
         {/* Heading */}
@@ -80,14 +52,14 @@ export function LandingWalkthrough({ onDevLogin }: LandingWalkthroughProps) {
           Autonomous coding agents in isolated cloud sandboxes.
         </h1>
 
-        {/* Concise Description */}
+        {/* Description */}
         <p className="mt-5 max-w-2xl text-sm sm:text-base text-zinc-400 leading-relaxed">
           Cloud Worker runs Claude Code and OpenAI Codex headlessly inside disposable
           Linux microVMs. Watch live terminal output, inspect code diffs in real time, and
-          receive tested pull requests on your repositories.
+          receive pull requests on your repositories.
         </p>
 
-        {/* Primary Call to Action */}
+        {/* Centralized Login and Signup Actions */}
         <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3 w-full sm:w-auto">
           <a
             href="/api/auth/github"
@@ -97,20 +69,17 @@ export function LandingWalkthrough({ onDevLogin }: LandingWalkthroughProps) {
             <span>Sign up with GitHub</span>
           </a>
 
-          <button
-            type="button"
-            onClick={handleDevQuickstart}
-            disabled={isLoggingIn}
-            className="flex w-full sm:w-auto items-center justify-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/70 px-5 py-3 text-xs sm:text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100 cursor-pointer"
+          <Link
+            href="/login"
+            className="flex w-full sm:w-auto items-center justify-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/70 px-6 py-3 text-xs sm:text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
           >
-            {isLoggingIn ? (
-              <Loader2 className="h-4 w-4 animate-spin text-zinc-400" />
-            ) : (
-              <Sparkles className="h-4 w-4 text-blue-400" />
-            )}
-            <span>Developer quickstart</span>
-          </button>
+            <span>Log in</span>
+          </Link>
         </div>
+
+        <p className="mt-3 text-xs text-zinc-500">
+          Connect with GitHub to manage repositories and run tasks.
+        </p>
 
         {/* 3 Core Highlights */}
         <div className="mt-12 grid grid-cols-1 sm:grid-cols-3 gap-3 w-full max-w-2xl text-left">
@@ -140,7 +109,7 @@ export function LandingWalkthrough({ onDevLogin }: LandingWalkthroughProps) {
               <span>Automated PRs</span>
             </div>
             <p className="text-[11px] text-zinc-500 leading-normal">
-              Agents push branch commits and open verified pull requests.
+              Agents push branch commits and open pull requests.
             </p>
           </div>
         </div>

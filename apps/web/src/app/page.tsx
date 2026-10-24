@@ -7,7 +7,6 @@ import {
   fetchTasks,
   getCurrentUser,
   logout,
-  devLogin,
   createTask,
   fetchGitHubRepositories,
 } from "../lib/api";
@@ -102,19 +101,6 @@ export default function DashboardPage() {
     };
   }, [router, loadTasks, loadRepositories]);
 
-  const handleDevLogin = async (username = "developer") => {
-    setIsAuthChecking(true);
-    try {
-      const user = await devLogin(username);
-      setCurrentUser(user);
-      await Promise.all([loadTasks(), loadRepositories()]);
-    } catch (err) {
-      console.error("Developer login failed:", err);
-    } finally {
-      setIsAuthChecking(false);
-    }
-  };
-
   const handleLogout = async () => {
     try {
       await logout();
@@ -172,7 +158,7 @@ export default function DashboardPage() {
 
   // If user is not authenticated, render the minimalist single-view landing page
   if (!currentUser) {
-    return <LandingWalkthrough onDevLogin={handleDevLogin} />;
+    return <LandingWalkthrough />;
   }
 
   // Active project badge initials
