@@ -1,9 +1,21 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from "crypto";
 
 const DEFAULT_DEV_KEY = "cloud-worker-local-dev-secret-key-32bytes";
+let warnedDevEncryptionKey = false;
 
 function getMasterKey(masterKey?: string): Buffer {
-  const keySource = masterKey || process.env.ENCRYPTION_KEY || process.env.SESSION_SECRET || DEFAULT_DEV_KEY;
+  // The credential encryption key never borrows SESSION_SECRET — one leaked
+  // secret must not unlock both login signing and stored credentials.
+  const keySource = masterKey || process.env.ENCRYPTION_KEY || DEFAULT_DEV_KEY;
+
+  if (!masterKey && !process.env.ENCRYPTION_KEY && process.env.NODE_ENV !== "test" && !warnedDevEncryptionKey) {
+    warnedDevEncryptionKey = true;
+    console.warn(
+      "[crypto] ENCRYPTION_KEY is not set — using the built-in development key. " +
+        "Acceptable for local development only; production refuses to boot without ENCRYPTION_KEY.",
+    );
+  }
+
   return createHash("sha256").update(keySource).digest();
 }
 

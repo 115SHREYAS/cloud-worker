@@ -71,6 +71,24 @@ export function loadConfig(env = process.env): ServerEnvironment {
     if (!config.DATABASE_URL) {
       console.warn("[config] WARNING: DATABASE_URL is not set in production. Using ephemeral in-memory storage.");
     }
+
+    // Fail closed rather than silently running on the built-in development secrets:
+    // a public fallback session secret lets anyone forge logins, and a public
+    // fallback encryption key makes every stored credential decryptable after a
+    // database breach.
+    const invalidSecrets: string[] = [];
+    if (!config.SESSION_SECRET || config.SESSION_SECRET.length < 32) {
+      invalidSecrets.push("SESSION_SECRET (min 32 chars)");
+    }
+    if (!config.ENCRYPTION_KEY || config.ENCRYPTION_KEY.length < 32) {
+      invalidSecrets.push("ENCRYPTION_KEY (min 32 chars)");
+    }
+    if (invalidSecrets.length > 0) {
+      throw new Error(
+        `Refusing to start in production: set ${invalidSecrets.join(" and ")}. ` +
+          `Generate each with: openssl rand -hex 32`,
+      );
+    }
   }
 
   return config;

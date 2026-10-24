@@ -8,6 +8,7 @@ import { DirectTaskQueue } from "./queue/task-queue.ts";
 import { TaskWorker } from "./queue/task-worker.ts";
 import { createServer } from "./server.ts";
 import { createSessionToken } from "./security/session.ts";
+import { encryptCredential, decryptCredential } from "./security/crypto.ts";
 
 describe("Phase 6 Security & Hardening Controls", () => {
   it("enforces sliding window rate limits", () => {
@@ -53,6 +54,72 @@ describe("Phase 6 Security & Hardening Controls", () => {
     expect(() => {
       EnvironmentSchema.parse({ PORT: "not-a-number" });
     }).toThrow();
+  });
+
+  it("refuses to start in production without strong session and encryption secrets", () => {
+    const prodBase = {
+      NODE_ENV: "production",
+      E2B_API_KEY: "e2b_test_key",
+      DATABASE_URL: "postgres://localhost:5432/test",
+    };
+
+    // Neither secret set
+    expect(() => loadConfig({ ...prodBase })).toThrow(/SESSION_SECRET/);
+
+    // SESSION_SECRET set but ENCRYPTION_KEY missing
+    expect(() =>
+      loadConfig({ ...prodBase, SESSION_SECRET: "s".repeat(32) }),
+    ).toThrow(/ENCRYPTION_KEY/);
+
+    // Secrets shorter than 32 characters are rejected
+    expect(() =>
+      loadConfig({ ...prodBase, SESSION_SECRET: "short", ENCRYPTION_KEY: "k".repeat(32) }),
+    ).toThrow(/SESSION_SECRET/);
+
+    // Valid 32+ character secrets boot cleanly
+    const ok = loadConfig({
+      ...prodBase,
+      SESSION_SECRET: "s".repeat(48),
+      ENCRYPTION_KEY: "k".repeat(48),
+    });
+    expect(ok.NODE_ENV).toBe("production");
+  });
+
+  it("boots in development without any secrets configured", () => {
+    const config = loadConfig({ NODE_ENV: "development" });
+    expect(config.NODE_ENV).toBe("development");
+    expect(config.SESSION_SECRET).toBeUndefined();
+    expect(config.ENCRYPTION_KEY).toBeUndefined();
+  });
+
+  it("derives the credential encryption key from ENCRYPTION_KEY only, never SESSION_SECRET", () => {
+    const previousEncryptionKey = process.env.ENCRYPTION_KEY;
+    const previousSessionSecret = process.env.SESSION_SECRET;
+
+    try {
+      delete process.env.ENCRYPTION_KEY;
+      process.env.SESSION_SECRET = "first-unrelated-session-secret-value";
+
+      const encrypted = encryptCredential("user-token-123");
+
+      // If SESSION_SECRET were still part of the key chain, changing it between
+      // encrypt and decrypt would break decryption. Falling back to the constant
+      // dev key means both operations use the same key regardless.
+      process.env.SESSION_SECRET = "second-completely-different-secret-value";
+      const decrypted = decryptCredential(encrypted);
+      expect(decrypted).toBe("user-token-123");
+    } finally {
+      if (previousEncryptionKey === undefined) {
+        delete process.env.ENCRYPTION_KEY;
+      } else {
+        process.env.ENCRYPTION_KEY = previousEncryptionKey;
+      }
+      if (previousSessionSecret === undefined) {
+        delete process.env.SESSION_SECRET;
+      } else {
+        process.env.SESSION_SECRET = previousSessionSecret;
+      }
+    }
   });
 
   it("identifies and terminates timed out tasks in SandboxScavenger", async () => {

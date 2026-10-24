@@ -13,6 +13,22 @@ export interface SessionPayload {
 const DEFAULT_SECRET = "cloud-worker-session-secret-change-in-prod";
 const DEFAULT_MAX_AGE_SEC = 7 * 24 * 60 * 60; // 7 days
 
+let warnedDevSessionSecret = false;
+
+function resolveSessionSecret(): string {
+  const secret = process.env.SESSION_SECRET;
+  if (secret) return secret;
+
+  if (process.env.NODE_ENV !== "test" && !warnedDevSessionSecret) {
+    warnedDevSessionSecret = true;
+    console.warn(
+      "[session] SESSION_SECRET is not set — using the built-in development secret. " +
+        "Acceptable for local development only; production refuses to boot without SESSION_SECRET.",
+    );
+  }
+  return DEFAULT_SECRET;
+}
+
 function base64UrlEncode(str: string): string {
   return Buffer.from(str)
     .toString("base64")
@@ -31,7 +47,7 @@ function base64UrlDecode(str: string): string {
 
 export function createSessionToken(
   payload: Omit<SessionPayload, "iat" | "exp">,
-  secret = process.env.SESSION_SECRET || DEFAULT_SECRET,
+  secret = resolveSessionSecret(),
   maxAgeSec = DEFAULT_MAX_AGE_SEC,
 ): string {
   const now = Math.floor(Date.now() / 1000);
@@ -54,7 +70,7 @@ export function createSessionToken(
 
 export function verifySessionToken(
   token: string,
-  secret = process.env.SESSION_SECRET || DEFAULT_SECRET,
+  secret = resolveSessionSecret(),
 ): SessionPayload | null {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
