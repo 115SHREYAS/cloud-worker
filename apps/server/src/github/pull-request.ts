@@ -65,7 +65,9 @@ export async function createPullRequest(
     body,
     installationId,
     tokenManager,
-    fallbackGithubToken = process.env.GITHUB_TOKEN,
+    // Operator PAT is a local development convenience; production PRs must come
+    // from the installation tied to the task's repository
+    fallbackGithubToken = process.env.NODE_ENV === "production" ? undefined : process.env.GITHUB_TOKEN,
     mockInDev = false,
   } = options;
 

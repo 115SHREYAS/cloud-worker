@@ -520,18 +520,6 @@ export function createServer(options: ServerOptions) {
               }
             }
 
-            // Auto-import local host credentials for this user if available
-            try {
-              const detected = await providerAuthRelay.detectLocalCredentials();
-              for (const d of detected) {
-                if (d.available) {
-                  await providerAuthRelay.importLocalCredentials(repo, d.provider, user.id);
-                }
-              }
-            } catch {
-              // Ignore
-            }
-
             const sessionToken = createSessionToken({
               sub: user.id,
               githubId: user.githubId,
@@ -887,20 +875,10 @@ export function createServer(options: ServerOptions) {
           if (!session) return unauthorized();
           const dbRecord = await repo.getAuthSessionRecord(provider as AgentProvider, session.sub);
           const hasDbSession = dbRecord !== null && dbRecord.authJson.trim().length > 0;
-          const hasEnvSession =
-            provider === "codex"
-              ? Boolean(process.env.CODEX_AUTH_JSON || process.env.OPENAI_API_KEY)
-              : Boolean(process.env.CLAUDE_AUTH_JSON || process.env.ANTHROPIC_API_KEY);
-
-          const hasApiKey =
-            dbRecord?.authMode === "api_key" ||
-            (provider === "codex" && Boolean(process.env.OPENAI_API_KEY)) ||
-            (provider === "claude" && Boolean(process.env.ANTHROPIC_API_KEY));
-
-          const authMode = hasApiKey ? "api_key" : (dbRecord?.authMode || "subscription");
+          const authMode = dbRecord?.authMode === "api_key" ? "api_key" : (dbRecord?.authMode || "subscription");
 
           return Response.json(
-            { provider, configured: hasDbSession || hasEnvSession, authMode },
+            { provider, configured: hasDbSession, authMode },
             { headers: CORS_HEADERS },
           );
         }
@@ -1200,10 +1178,6 @@ export function createServer(options: ServerOptions) {
           if (!hasApiKey && harness) {
             const dbRecord = await repo.getAuthSessionRecord(harness, session.sub);
             if (dbRecord?.authMode === "api_key") {
-              hasApiKey = true;
-            } else if (harness === "codex" && Boolean(process.env.OPENAI_API_KEY)) {
-              hasApiKey = true;
-            } else if (harness === "claude" && Boolean(process.env.ANTHROPIC_API_KEY)) {
               hasApiKey = true;
             }
           }

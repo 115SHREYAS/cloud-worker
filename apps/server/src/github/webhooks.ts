@@ -163,13 +163,13 @@ export async function handleGitHubWebhook(
         const commenterUser = payload.sender?.id ? await repository.getUserByGitHubId(payload.sender.id) : null;
         if (commenterUser?.defaultModel) {
           model = commenterUser.defaultModel;
-        } else {
-          const hasClaude = (await repository.hasAuthSession("claude", "default")) || Boolean(process.env.CLAUDE_AUTH_JSON || process.env.ANTHROPIC_API_KEY);
-          const hasCodex = (await repository.hasAuthSession("codex", "default")) || Boolean(process.env.CODEX_AUTH_JSON || process.env.OPENAI_API_KEY);
+        } else if (commenterUser) {
+          // Pick the harness the commenter personally connected; never probe shared
+          // "default" accounts or operator env keys
+          const hasClaude = await repository.hasAuthSession("claude", commenterUser.id);
+          const hasCodex = await repository.hasAuthSession("codex", commenterUser.id);
           if (hasClaude && !hasCodex) {
             model = "claude-3-5-sonnet-20241022";
-          } else {
-            model = "codex";
           }
         }
       }

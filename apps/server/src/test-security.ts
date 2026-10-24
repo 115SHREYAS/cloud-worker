@@ -185,6 +185,43 @@ describe("Phase 6 Security & Hardening Controls", () => {
     }
   });
 
+  it("fails tasks whose owner has no credentials instead of borrowing shared or operator credentials", async () => {
+    const repo = new MemoryTaskRepository();
+    const eventBus = new MemoryEventBus();
+    const worker = new TaskWorker(repo, eventBus);
+
+    // Shared "default" account and operator env key that must NOT be borrowed
+    await repo.saveAuthSession("codex", '{"token":"operator-default"}', "default", "subscription");
+    const previousKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-operator-env-key";
+
+    try {
+      const task = await repo.createTask(
+        "task-no-creds",
+        { repo: { owner: "acme", repo: "api", branch: "main" }, prompt: "fix bug", model: "codex" },
+        "agent/patch-no-creds",
+        "usr_unconnected",
+      );
+      expect(task.userId).toBe("usr_unconnected");
+
+      await worker.processTask("task-no-creds");
+
+      const failed = await repo.getTask("task-no-creds");
+      expect(failed?.status).toBe("failed");
+      expect(failed?.error).toContain("connect");
+
+      // The owner's row must still be empty — nothing was copied into it
+      const ownerRecord = await repo.getAuthSessionRecord("codex", "usr_unconnected");
+      expect(ownerRecord).toBeNull();
+    } finally {
+      if (previousKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previousKey;
+      }
+    }
+  });
+
   it("destroys sandbox instance immediately on cancel", () => {
     const repo = new MemoryTaskRepository();
     const eventBus = new MemoryEventBus();

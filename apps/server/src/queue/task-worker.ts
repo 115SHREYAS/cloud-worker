@@ -8,9 +8,6 @@ import {
   generatePullRequestMetadata,
   type GitHubTokenManager,
 } from "../github/index.ts";
-import fs from "fs/promises";
-import { existsSync } from "fs";
-import { join } from "path";
 
 function estimateTokenUsage(stdout: string, stderr: string, prompt: string): TokenUsage {
   const combined = `${stdout}\n${stderr}`;
@@ -441,7 +438,7 @@ export class TaskWorker {
 
       // 2. Determine agent provider and credentials
       const provider = this.resolveProvider(task.model);
-      const { authJson, apiKey, ownedByUser } = await this.resolveCredentials(provider, task.userId);
+      const { authJson, apiKey } = await this.resolveCredentials(provider, task.userId);
       if (!authJson && !apiKey) {
         const errorMsg =
           `No valid authentication credentials found for ${provider === "codex" ? "OpenAI Codex" : "Claude Code"}. ` +
@@ -596,10 +593,9 @@ export class TaskWorker {
         const result = await session.run(currentPrompt, { isContinue: turn > 1 });
         await stdoutParser.end().catch(() => {});
 
-        // 7. Persist refreshed subscription tokens if updated by CLI. Only when the
-        // task ran on its owner's own credentials — otherwise persisting would copy
-        // another principal's refreshed token into the owner's (or "default") auth row.
-        if (result.refreshedAuthJson && ownedByUser && task.userId) {
+        // 7. Persist refreshed subscription tokens under the task owner. Credentials
+        // can only come from the owner's own record, so attribution is always safe.
+        if (result.refreshedAuthJson && task.userId) {
           await this.repo.saveAuthSession(
             provider,
             result.refreshedAuthJson,
@@ -685,12 +681,15 @@ export class TaskWorker {
           }
 
           // Push working branch and open/update pull request if authenticated
-          const hasAuth = Boolean(task.repo.installationId || process.env.GITHUB_TOKEN);
+          const hasAuth = Boolean(
+            task.repo.installationId ||
+              (process.env.NODE_ENV !== "production" && process.env.GITHUB_TOKEN),
+          );
           const hasDiff = Boolean((finalDiff && finalDiff.trim().length > 0) || newCommitsCount > 0);
 
           if (hasAuth && hasDiff) {
             try {
-              let pushToken = process.env.GITHUB_TOKEN;
+              let pushToken = process.env.NODE_ENV === "production" ? undefined : process.env.GITHUB_TOKEN;
               if (task.repo.installationId && this.tokenManager && this.tokenManager.isConfigured()) {
                 try {
                   pushToken = await this.tokenManager.getInstallationToken(task.repo.installationId);
@@ -1007,73 +1006,32 @@ export class TaskWorker {
   private async resolveCredentials(
     provider: AgentProvider,
     userId?: string,
-  ): Promise<{ authJson?: string; apiKey?: string; ownedByUser: boolean }> {
-    // 1. Check stored auth session for the specific user in database
-    if (userId) {
-      const userRecord = await this.repo.getAuthSessionRecord(provider, userId);
-      if (userRecord) {
-        if (userRecord.authMode === "api_key") {
-          return { apiKey: userRecord.authJson, ownedByUser: true };
-        }
-        return { authJson: userRecord.authJson, ownedByUser: true };
-      }
+  ): Promise<{ authJson?: string; apiKey?: string }> {
+    // Only the task owner's own connected credentials may run a task. There is
+    // deliberately no fallback to a shared "default" account, server environment
+    // keys, or host credential files — borrowing those would spend the operator's
+    // subscription on other users' tasks.
+    if (!userId) {
+      return {};
     }
 
-    // 2. Check default stored auth session in database
-    const storedRecord = await this.repo.getAuthSessionRecord(provider, "default");
-    if (storedRecord) {
-      if (storedRecord.authMode === "api_key") {
-        return { apiKey: storedRecord.authJson, ownedByUser: false };
-      }
-      return { authJson: storedRecord.authJson, ownedByUser: false };
+    const userRecord = await this.repo.getAuthSessionRecord(provider, userId);
+    if (!userRecord) {
+      return {};
     }
 
-    // 3. Fallback to server environment variables
-    if (provider === "codex") {
-      if (process.env.CODEX_AUTH_JSON) {
-        return { authJson: process.env.CODEX_AUTH_JSON, ownedByUser: false };
-      }
-      if (process.env.OPENAI_API_KEY) {
-        return { apiKey: process.env.OPENAI_API_KEY, ownedByUser: false };
-      }
-    } else {
-      if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-        return { authJson: process.env.CLAUDE_CODE_OAUTH_TOKEN, ownedByUser: false };
-      }
-      if (process.env.CLAUDE_AUTH_JSON) {
-        return { authJson: process.env.CLAUDE_AUTH_JSON, ownedByUser: false };
-      }
-      if (process.env.ANTHROPIC_API_KEY) {
-        return { apiKey: process.env.ANTHROPIC_API_KEY, ownedByUser: false };
-      }
+    if (userRecord.authMode === "api_key") {
+      return { apiKey: userRecord.authJson };
     }
-
-    // 4. Fallback to host detected credentials if in local development
-    try {
-      const homeDir = process.env.USERPROFILE || process.env.HOME || "";
-      const hostFilePath =
-        provider === "codex"
-          ? join(homeDir, ".codex", "auth.json")
-          : join(homeDir, ".claude.json");
-
-      if (existsSync(hostFilePath)) {
-        const hostAuth = await fs.readFile(hostFilePath, "utf8");
-        if (hostAuth.trim().length > 0) {
-          await this.repo.saveAuthSession(provider, hostAuth, userId || "default", "subscription");
-          return { authJson: hostAuth, ownedByUser: false };
-        }
-      }
-    } catch (err) {
-      console.warn(`[task-worker] Failed to load local host credentials for ${provider}:`, err);
-    }
-
-    return { ownedByUser: false };
+    return { authJson: userRecord.authJson };
   }
 
   private async setupRepository(sandbox: SandboxManager, task: TaskRecord): Promise<void> {
     const { owner, repo, branch, baseCommit, installationId } = task.repo;
 
-    let githubToken = process.env.GITHUB_TOKEN;
+    // The operator's personal PAT is a local development convenience only; in
+    // production a task must use the installation token linked to its repository
+    let githubToken = process.env.NODE_ENV === "production" ? undefined : process.env.GITHUB_TOKEN;
     if (installationId && this.tokenManager && this.tokenManager.isConfigured()) {
       try {
         githubToken = await this.tokenManager.getInstallationToken(installationId);
