@@ -7,6 +7,7 @@ import { MemoryEventBus } from "./events/event-bus.ts";
 import { DirectTaskQueue } from "./queue/task-queue.ts";
 import { TaskWorker } from "./queue/task-worker.ts";
 import { createServer } from "./server.ts";
+import { createSessionToken } from "./security/session.ts";
 
 describe("Phase 6 Security & Hardening Controls", () => {
   it("enforces sliding window rate limits", () => {
@@ -129,16 +130,35 @@ describe("Phase 6 Security & Hardening Controls", () => {
     const baseUrl = `http://localhost:${server.port}`;
 
     try {
+      const token = createSessionToken({
+        sub: "usr_rate_test",
+        username: "rate-tester",
+        email: "rate-tester@example.com",
+        avatarUrl: "",
+      });
+      const requestHeaders = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      };
+
       const payload = {
         repo: { owner: "acme", repo: "api", branch: "main" },
         prompt: "Add health check endpoint with unit tests",
         model: "codex",
       };
 
+      // Unauthenticated requests are rejected before rate limiting applies
+      const anonRes = await fetch(`${baseUrl}/api/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      expect(anonRes.status).toBe(401);
+
       // 1st request -> 201
       const res1 = await fetch(`${baseUrl}/api/tasks`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: requestHeaders,
         body: JSON.stringify(payload),
       });
       expect(res1.status).toBe(201);
@@ -146,7 +166,7 @@ describe("Phase 6 Security & Hardening Controls", () => {
       // 2nd request -> 201
       const res2 = await fetch(`${baseUrl}/api/tasks`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: requestHeaders,
         body: JSON.stringify(payload),
       });
       expect(res2.status).toBe(201);
@@ -154,7 +174,7 @@ describe("Phase 6 Security & Hardening Controls", () => {
       // 3rd request -> 429 Too Many Requests
       const res3 = await fetch(`${baseUrl}/api/tasks`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: requestHeaders,
         body: JSON.stringify(payload),
       });
       expect(res3.status).toBe(429);

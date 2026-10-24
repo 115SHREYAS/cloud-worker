@@ -57,6 +57,21 @@ function getCurrentUserSession(req: Request): SessionPayload | null {
   return null;
 }
 
+function unauthorized(): Response {
+  return Response.json(
+    { error: "Authentication required" },
+    { status: 401, headers: CORS_HEADERS },
+  );
+}
+
+// Returns 404 instead of 403 for ownership mismatches so task IDs cannot be probed
+function taskNotFound(): Response {
+  return Response.json(
+    { error: "Task not found" },
+    { status: 404, headers: CORS_HEADERS },
+  );
+}
+
 export function createServer(options: ServerOptions) {
   const { port = 3001, repo, eventBus, queue, worker, tokenManager } = options;
   const taskLimiter = options.taskLimiter ?? new RateLimiter({ windowMs: 60_000, maxRequests: 20 });
@@ -93,17 +108,19 @@ export function createServer(options: ServerOptions) {
           );
         }
 
-        // List tasks (user-scoped if authenticated)
+        // List tasks (session user's tasks only)
         if (path === "/api/tasks" && method === "GET") {
+          if (!session) return unauthorized();
           const limitParam = url.searchParams.get("limit");
           const parsedLimit = limitParam ? parseInt(limitParam, 10) : 50;
           const limit = Number.isNaN(parsedLimit) ? 50 : Math.min(Math.max(1, parsedLimit), 100);
-          const tasks = await repo.listTasks(limit, session?.sub);
+          const tasks = await repo.listTasks(limit, session.sub);
           return Response.json({ tasks }, { headers: CORS_HEADERS });
         }
 
-        // Create task
+        // Create task (authenticated users only)
         if (path === "/api/tasks" && method === "POST") {
+          if (!session) return unauthorized();
           const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
           const limitCheck = taskLimiter.check(clientIp);
           if (!limitCheck.allowed) {
@@ -138,7 +155,7 @@ export function createServer(options: ServerOptions) {
           const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           const workingBranch = `agent/patch-${taskId}`;
 
-          const task = await repo.createTask(taskId, input, workingBranch, session?.sub);
+          const task = await repo.createTask(taskId, input, workingBranch, session.sub);
           await queue.enqueue(taskId);
 
           return Response.json({ task }, { status: 201, headers: CORS_HEADERS });
@@ -152,13 +169,10 @@ export function createServer(options: ServerOptions) {
             return Response.json({ error: "Task ID required" }, { status: 400, headers: CORS_HEADERS });
           }
 
+          if (!session) return unauthorized();
           const task = await repo.getTask(taskId);
-          if (!task) {
-            return Response.json({ error: "Task not found" }, { status: 404, headers: CORS_HEADERS });
-          }
-
-          if (task.userId && session && session.sub !== task.userId) {
-            return Response.json({ error: "Unauthorized access to task stream" }, { status: 403, headers: CORS_HEADERS });
+          if (!task || task.userId !== session.sub) {
+            return taskNotFound();
           }
 
           const encoder = new TextEncoder();
@@ -253,9 +267,10 @@ export function createServer(options: ServerOptions) {
             return Response.json({ error: "Task ID required" }, { status: 400, headers: CORS_HEADERS });
           }
 
+          if (!session) return unauthorized();
           const task = await repo.getTask(taskId);
-          if (!task) {
-            return Response.json({ error: "Task not found" }, { status: 404, headers: CORS_HEADERS });
+          if (!task || task.userId !== session.sub) {
+            return taskNotFound();
           }
           return Response.json({ task }, { headers: CORS_HEADERS });
         }
@@ -268,9 +283,10 @@ export function createServer(options: ServerOptions) {
             return Response.json({ error: "Task ID required" }, { status: 400, headers: CORS_HEADERS });
           }
 
+          if (!session) return unauthorized();
           const task = await repo.getTask(taskId);
-          if (!task) {
-            return Response.json({ error: "Task not found" }, { status: 404, headers: CORS_HEADERS });
+          if (!task || task.userId !== session.sub) {
+            return taskNotFound();
           }
 
           const logs = await repo.getLogs(taskId);
@@ -285,13 +301,10 @@ export function createServer(options: ServerOptions) {
             return Response.json({ error: "Task ID required" }, { status: 400, headers: CORS_HEADERS });
           }
 
+          if (!session) return unauthorized();
           const task = await repo.getTask(taskId);
-          if (!task) {
-            return Response.json({ error: "Task not found" }, { status: 404, headers: CORS_HEADERS });
-          }
-
-          if (task.userId && session && session.sub !== task.userId) {
-            return Response.json({ error: "Unauthorized access to task" }, { status: 403, headers: CORS_HEADERS });
+          if (!task || task.userId !== session.sub) {
+            return taskNotFound();
           }
 
           const cancelled = await queue.cancel(taskId);
@@ -319,13 +332,10 @@ export function createServer(options: ServerOptions) {
             return Response.json({ error: "Task ID required" }, { status: 400, headers: CORS_HEADERS });
           }
 
+          if (!session) return unauthorized();
           const task = await repo.getTask(taskId);
-          if (!task) {
-            return Response.json({ error: "Task not found" }, { status: 404, headers: CORS_HEADERS });
-          }
-
-          if (task.userId && session && session.sub !== task.userId) {
-            return Response.json({ error: "Unauthorized access to task" }, { status: 403, headers: CORS_HEADERS });
+          if (!task || task.userId !== session.sub) {
+            return taskNotFound();
           }
 
           if (task.status !== "running" && task.status !== "waiting_input") {
@@ -377,13 +387,10 @@ export function createServer(options: ServerOptions) {
             return Response.json({ error: "Task ID required" }, { status: 400, headers: CORS_HEADERS });
           }
 
+          if (!session) return unauthorized();
           const task = await repo.getTask(taskId);
-          if (!task) {
-            return Response.json({ error: "Task not found" }, { status: 404, headers: CORS_HEADERS });
-          }
-
-          if (task.userId && session && session.sub !== task.userId) {
-            return Response.json({ error: "Unauthorized access to task" }, { status: 403, headers: CORS_HEADERS });
+          if (!task || task.userId !== session.sub) {
+            return taskNotFound();
           }
 
           if (worker) {
@@ -717,6 +724,7 @@ export function createServer(options: ServerOptions) {
 
         // Detect local host credentials for Claude Code or Codex
         if (path === "/api/auth/provider/detect" && method === "GET") {
+          if (!session) return unauthorized();
           try {
             const detected = await providerAuthRelay.detectLocalCredentials();
             return Response.json({ detected }, { headers: CORS_HEADERS });
@@ -735,13 +743,14 @@ export function createServer(options: ServerOptions) {
             return Response.json({ error: "Invalid JSON body" }, { status: 400, headers: CORS_HEADERS });
           }
 
+          if (!session) return unauthorized();
+
           if (body.provider !== "codex" && body.provider !== "claude") {
             return Response.json({ error: "Provider must be 'codex' or 'claude'" }, { status: 400, headers: CORS_HEADERS });
           }
 
-          const targetUserId = session?.sub ?? "default";
           try {
-            const result = await providerAuthRelay.importLocalCredentials(repo, body.provider as AgentProvider, targetUserId);
+            const result = await providerAuthRelay.importLocalCredentials(repo, body.provider as AgentProvider, session.sub);
             return Response.json(result, { headers: CORS_HEADERS });
           } catch (err) {
             return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400, headers: CORS_HEADERS });
@@ -757,13 +766,14 @@ export function createServer(options: ServerOptions) {
             return Response.json({ error: "Invalid JSON body" }, { status: 400, headers: CORS_HEADERS });
           }
 
+          if (!session) return unauthorized();
+
           if (body.provider !== "codex" && body.provider !== "claude") {
             return Response.json({ error: "Provider must be 'codex' or 'claude'" }, { status: 400, headers: CORS_HEADERS });
           }
 
-          const targetUserId = session?.sub ?? "default";
           try {
-            const flow = await providerAuthRelay.startLoginFlow(repo, body.provider as AgentProvider, targetUserId);
+            const flow = await providerAuthRelay.startLoginFlow(repo, body.provider as AgentProvider, session.sub);
             return Response.json({ flow }, { headers: CORS_HEADERS });
           } catch (err) {
             return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500, headers: CORS_HEADERS });
@@ -777,8 +787,9 @@ export function createServer(options: ServerOptions) {
           if (!flowId) {
             return Response.json({ error: "flowId required" }, { status: 400, headers: CORS_HEADERS });
           }
+          if (!session) return unauthorized();
           const flow = providerAuthRelay.getFlowStatus(flowId);
-          if (!flow) {
+          if (!flow || flow.userId !== session.sub) {
             return Response.json({ error: "Flow not found" }, { status: 404, headers: CORS_HEADERS });
           }
           return Response.json({ flow }, { headers: CORS_HEADERS });
@@ -791,11 +802,14 @@ export function createServer(options: ServerOptions) {
             body = (await req.json()) as { flowId?: string };
           } catch {}
 
+          if (!session) return unauthorized();
+
           if (!body.flowId) {
             return Response.json({ error: "flowId required" }, { status: 400, headers: CORS_HEADERS });
           }
 
-          const ok = providerAuthRelay.cancelFlow(body.flowId);
+          const flow = providerAuthRelay.getFlowStatus(body.flowId);
+          const ok = Boolean(flow && flow.userId === session.sub) && providerAuthRelay.cancelFlow(body.flowId);
           return Response.json({ ok }, { headers: CORS_HEADERS });
         }
 
@@ -826,6 +840,8 @@ export function createServer(options: ServerOptions) {
 
         // Legacy / direct auth session route
         if (path === "/api/auth/session" && method === "POST") {
+          if (!session) return unauthorized();
+
           let body: { provider?: string; authJson?: string; userId?: string };
           try {
             body = (await req.json()) as { provider?: string; authJson?: string; userId?: string };
@@ -847,8 +863,8 @@ export function createServer(options: ServerOptions) {
             );
           }
 
-          const targetUserId = session?.sub ?? body.userId ?? "default";
-          await repo.saveAuthSession(body.provider as AgentProvider, body.authJson, targetUserId);
+          // Credentials are always written to the session user; never trust a client-supplied userId
+          await repo.saveAuthSession(body.provider as AgentProvider, body.authJson, session.sub);
           return Response.json({ success: true, provider: body.provider }, { headers: CORS_HEADERS });
         }
 
@@ -863,10 +879,8 @@ export function createServer(options: ServerOptions) {
             );
           }
 
-          const targetUserId = session?.sub ?? "default";
-          const dbRecord =
-            (await repo.getAuthSessionRecord(provider as AgentProvider, targetUserId)) ||
-            (targetUserId !== "default" ? await repo.getAuthSessionRecord(provider as AgentProvider, "default") : null);
+          if (!session) return unauthorized();
+          const dbRecord = await repo.getAuthSessionRecord(provider as AgentProvider, session.sub);
           const hasDbSession = dbRecord !== null && dbRecord.authJson.trim().length > 0;
           const hasEnvSession =
             provider === "codex"
@@ -946,6 +960,7 @@ export function createServer(options: ServerOptions) {
 
         // GitHub App status
         if (path === "/api/github/status" && method === "GET") {
+          if (!session) return unauthorized();
           let appSlug = process.env.GITHUB_APP_SLUG;
           if (!appSlug && tokenManager && tokenManager.isConfigured()) {
             try {
@@ -1044,76 +1059,32 @@ export function createServer(options: ServerOptions) {
           return Response.json({ ok: true }, { headers: CORS_HEADERS });
         }
 
-        // List GitHub App installations (user-scoped if logged in)
+        // List GitHub App installations (session user's linked installations only)
         if (path === "/api/github/installations" && method === "GET") {
-          let installations = await repo.listInstallations();
-          if (installations.length === 0 && tokenManager && tokenManager.isConfigured()) {
-            installations = await syncGitHubInstallations(repo, tokenManager, session?.sub);
+          if (!session) return unauthorized();
+          let userInstalls = await repo.listUserInstallations(session.sub);
+          if (userInstalls.length === 0 && tokenManager && tokenManager.isConfigured()) {
+            await syncGitHubInstallations(repo, tokenManager, session.sub);
+            userInstalls = await repo.listUserInstallations(session.sub);
           }
-
-          if (session) {
-            let userInstalls = await repo.listUserInstallations(session.sub);
-            if (userInstalls.length === 0 && installations.length > 0) {
-              for (const inst of installations) {
-                await repo.linkUserInstallation(session.sub, inst.id);
-              }
-              userInstalls = await repo.listUserInstallations(session.sub);
-            }
-            if (userInstalls.length > 0) {
-              return Response.json({ installations: userInstalls }, { headers: CORS_HEADERS });
-            }
-          }
-          return Response.json({ installations }, { headers: CORS_HEADERS });
+          return Response.json({ installations: userInstalls }, { headers: CORS_HEADERS });
         }
 
-        // List accessible GitHub repositories across installations
+        // List accessible GitHub repositories across the session user's installations
         if (path === "/api/github/repositories" && method === "GET") {
+          if (!session) return unauthorized();
           const requestedInstallationId = url.searchParams.get("installationId");
-          let installations = session
-            ? (await repo.listUserInstallations(session.sub)).length > 0
-              ? await repo.listUserInstallations(session.sub)
-              : await repo.listInstallations()
-            : await repo.listInstallations();
 
-          if (installations.length === 0 && tokenManager && tokenManager.isConfigured()) {
-            await syncGitHubInstallations(repo, tokenManager, session?.sub);
-            installations = session
-              ? (await repo.listUserInstallations(session.sub)).length > 0
-                ? await repo.listUserInstallations(session.sub)
-                : await repo.listInstallations()
-              : await repo.listInstallations();
+          let targetInstallations = await repo.listUserInstallations(session.sub);
+          if (targetInstallations.length === 0 && tokenManager && tokenManager.isConfigured()) {
+            await syncGitHubInstallations(repo, tokenManager, session.sub);
+            targetInstallations = await repo.listUserInstallations(session.sub);
           }
 
-          let targetInstallations = requestedInstallationId
-            ? installations.filter((i) => i.id === parseInt(requestedInstallationId, 10))
-            : installations;
-
-          // Direct GitHub API fallback if database is not yet populated
-          if (targetInstallations.length === 0 && tokenManager && tokenManager.isConfigured()) {
-            try {
-              const octokit = tokenManager.getAppOctokit();
-              const { data: ghInstalls } = await octokit.rest.apps.listInstallations();
-              targetInstallations = ghInstalls.map((i) => {
-                const accountInfo = extractAccountInfo(i.account);
-                return {
-                  id: i.id,
-                  accountLogin: accountInfo.login,
-                  accountType: accountInfo.type,
-                  repositorySelection: (i.repository_selection as "all" | "selected") || "all",
-                  appSlug: process.env.GITHUB_APP_SLUG || "cloud-worker-app",
-                  createdAt: i.created_at,
-                  updatedAt: i.updated_at,
-                };
-              });
-              for (const inst of targetInstallations) {
-                await repo.saveInstallation(inst);
-                if (session) {
-                  await repo.linkUserInstallation(session.sub, inst.id);
-                }
-              }
-            } catch (err) {
-              console.warn("[server] Fallback listInstallations failed:", err);
-            }
+          if (requestedInstallationId) {
+            targetInstallations = targetInstallations.filter(
+              (i) => i.id === parseInt(requestedInstallationId, 10),
+            );
           }
 
           const repositories: Array<{
@@ -1168,21 +1139,13 @@ export function createServer(options: ServerOptions) {
             );
           }
 
+          if (!session) return unauthorized();
+
           let installationId = requestedInstallationId ? parseInt(requestedInstallationId, 10) : undefined;
 
-          if (!installationId && session) {
+          if (!installationId) {
             const userInstalls = await repo.listUserInstallations(session.sub);
             const matchingInst = userInstalls.find(
-              (i) => i.accountLogin.toLowerCase() === owner.toLowerCase(),
-            );
-            if (matchingInst) {
-              installationId = matchingInst.id;
-            }
-          }
-
-          if (!installationId) {
-            const allInstalls = await repo.listInstallations();
-            const matchingInst = allInstalls.find(
               (i) => i.accountLogin.toLowerCase() === owner.toLowerCase(),
             );
             if (matchingInst) {
@@ -1223,16 +1186,14 @@ export function createServer(options: ServerOptions) {
 
         // List models filtered by agent harness
         if (path === "/api/models" && method === "GET") {
+          if (!session) return unauthorized();
           const harness = url.searchParams.get("harness") as "codex" | "claude" | null;
           const authModeParam = url.searchParams.get("authMode");
-          const targetUserId = session?.sub ?? "default";
 
           // Check if an API key is provided by the user for this harness
           let hasApiKey = authModeParam === "api_key";
           if (!hasApiKey && harness) {
-            const dbRecord =
-              (await repo.getAuthSessionRecord(harness, targetUserId)) ||
-              (targetUserId !== "default" ? await repo.getAuthSessionRecord(harness, "default") : null);
+            const dbRecord = await repo.getAuthSessionRecord(harness, session.sub);
             if (dbRecord?.authMode === "api_key") {
               hasApiKey = true;
             } else if (harness === "codex" && Boolean(process.env.OPENAI_API_KEY)) {
