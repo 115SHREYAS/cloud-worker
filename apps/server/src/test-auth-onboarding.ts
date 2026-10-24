@@ -159,4 +159,38 @@ describe("User Authentication & Onboarding Controls", () => {
       server.stop();
     }
   });
+
+  it("disables dev login in production deployments", async () => {
+    const repo = new MemoryTaskRepository();
+    const eventBus = new MemoryEventBus();
+    const worker = new TaskWorker(repo, eventBus);
+    const queue = new DirectTaskQueue(worker);
+
+    const server = createServer({
+      port: 0,
+      repo,
+      eventBus,
+      queue,
+    });
+
+    const baseUrl = `http://localhost:${server.port}`;
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+
+    try {
+      const res = await fetch(`${baseUrl}/api/auth/dev-login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "attacker", email: "attacker@example.com" }),
+      });
+      expect(res.status).toBe(404);
+
+      const data = (await res.json()) as { error?: string; token?: string };
+      expect(data.error).toBe("Not Found");
+      expect(data.token).toBeUndefined();
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+      server.stop();
+    }
+  });
 });

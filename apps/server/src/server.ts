@@ -555,8 +555,13 @@ export function createServer(options: ServerOptions) {
           }
         }
 
-        // Local development/guest login
+        // Local development/guest login (disabled outside development; would otherwise
+        // let anyone mint a session for an arbitrary username)
         if (path === "/api/auth/dev-login" && method === "POST") {
+          if (process.env.NODE_ENV === "production") {
+            return Response.json({ error: "Not Found" }, { status: 404, headers: CORS_HEADERS });
+          }
+
           let body: { username?: string; email?: string } = {};
           try {
             body = (await req.json()) as { username?: string; email?: string };
