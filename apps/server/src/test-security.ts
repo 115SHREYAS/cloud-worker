@@ -3,6 +3,8 @@ import { RateLimiter } from "./security/rate-limiter.ts";
 import { EnvironmentSchema, loadConfig } from "./config/env.ts";
 import { SandboxScavenger } from "./queue/sandbox-cleaner.ts";
 import { MemoryTaskRepository, createTaskRepository } from "./db/repository.ts";
+import { syncGitHubInstallations } from "./github/sync.ts";
+import type { GitHubTokenManager } from "./github/token-manager.ts";
 import { MemoryEventBus } from "./events/event-bus.ts";
 import { DirectTaskQueue } from "./queue/task-queue.ts";
 import { TaskWorker } from "./queue/task-worker.ts";
@@ -310,6 +312,57 @@ describe("Phase 6 Security & Hardening Controls", () => {
       if (previousDbUrl === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = previousDbUrl;
     }
+  });
+
+  it("links installations to a user only when the account login matches", async () => {
+    const repo = new MemoryTaskRepository();
+    await repo.upsertUser({
+      id: "usr_bob",
+      githubId: 42,
+      username: "bob",
+      email: "bob@example.com",
+      avatarUrl: "",
+      defaultModel: "codex",
+      defaultAuthMode: "subscription",
+      onboardingCompleted: false,
+    });
+
+    // The app's ONLY installation belongs to alice. The old single-tenant
+    // heuristic linked it to every new user — bob must not receive it.
+    const installations = [
+      {
+        id: 501,
+        account: { login: "alice", type: "User" },
+        repository_selection: "all",
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+    ];
+    const fakeTokenManager = {
+      isConfigured: () => true,
+      getAppOctokit: () => ({
+        rest: { apps: { listInstallations: async () => ({ data: installations }) } },
+      }),
+    } as unknown as GitHubTokenManager;
+
+    await syncGitHubInstallations(repo, fakeTokenManager, "usr_bob");
+    expect((await repo.listUserInstallations("usr_bob")).length).toBe(0);
+
+    // alice syncing her own account links her installation
+    await repo.upsertUser({
+      id: "usr_alice",
+      githubId: 43,
+      username: "alice",
+      email: "alice@example.com",
+      avatarUrl: "",
+      defaultModel: "codex",
+      defaultAuthMode: "subscription",
+      onboardingCompleted: false,
+    });
+    await syncGitHubInstallations(repo, fakeTokenManager, "usr_alice");
+    const aliceInstalls = await repo.listUserInstallations("usr_alice");
+    expect(aliceInstalls.length).toBe(1);
+    expect(aliceInstalls[0]?.id).toBe(501);
   });
 
   it("destroys sandbox instance immediately on cancel", () => {

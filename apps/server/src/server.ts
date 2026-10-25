@@ -155,6 +155,22 @@ export function createServer(options: ServerOptions) {
           const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           const workingBranch = `agent/patch-${taskId}`;
 
+          // A task may only target installations linked to the requesting user's
+          // account — otherwise any authenticated user could clone another
+          // account's private repositories into a sandbox they watch.
+          if (input.repo.installationId) {
+            const userInstalls = await repo.listUserInstallations(session.sub);
+            if (!userInstalls.some((i) => i.id === input.repo.installationId)) {
+              return Response.json(
+                {
+                  error:
+                    "This repository's GitHub App installation is not linked to your account. Install the GitHub App from settings first.",
+                },
+                { status: 400, headers: CORS_HEADERS },
+              );
+            }
+          }
+
           const task = await repo.createTask(taskId, input, workingBranch, session.sub);
           await queue.enqueue(taskId);
 
@@ -524,10 +540,7 @@ export function createServer(options: ServerOptions) {
               allInstalls = await syncGitHubInstallations(repo, tokenManager, user.id);
             }
             for (const inst of allInstalls) {
-              if (
-                inst.accountLogin.toLowerCase() === ghUser.login.toLowerCase() ||
-                allInstalls.length === 1
-              ) {
+              if (inst.accountLogin.toLowerCase() === ghUser.login.toLowerCase()) {
                 await repo.linkUserInstallation(user.id, inst.id);
               }
             }
@@ -1031,23 +1044,34 @@ export function createServer(options: ServerOptions) {
             return Response.json({ error: "installationId required" }, { status: 400, headers: CORS_HEADERS });
           }
 
-          if (tokenManager && tokenManager.isConfigured()) {
-            try {
-              const octokit = tokenManager.getAppOctokit();
-              const { data: inst } = await octokit.rest.apps.getInstallation({ installation_id: body.installationId });
-              const accountInfo = extractAccountInfo(inst.account);
-              await repo.saveInstallation({
-                id: inst.id,
-                accountLogin: accountInfo.login,
-                accountType: accountInfo.type,
-                repositorySelection: (inst.repository_selection as "all" | "selected") || "all",
-                appSlug: process.env.GITHUB_APP_SLUG || "cloud-worker-app",
-                createdAt: inst.created_at,
-                updatedAt: inst.updated_at,
-              });
-            } catch (err) {
-              console.warn(`[server] Failed to fetch installation ${body.installationId} during link:`, err);
+          // Only the installation's owning GitHub account may link it; an
+          // authenticated user must never be able to attach someone else's
+          // installation (and through it, their repositories).
+          if (!tokenManager || !tokenManager.isConfigured()) {
+            return Response.json({ error: "GitHub App is not configured" }, { status: 503, headers: CORS_HEADERS });
+          }
+          try {
+            const octokit = tokenManager.getAppOctokit();
+            const { data: inst } = await octokit.rest.apps.getInstallation({ installation_id: body.installationId });
+            const accountInfo = extractAccountInfo(inst.account);
+            if (accountInfo.login.toLowerCase() !== session.username.toLowerCase()) {
+              return Response.json(
+                { error: "This installation belongs to a different GitHub account" },
+                { status: 403, headers: CORS_HEADERS },
+              );
             }
+            await repo.saveInstallation({
+              id: inst.id,
+              accountLogin: accountInfo.login,
+              accountType: accountInfo.type,
+              repositorySelection: (inst.repository_selection as "all" | "selected") || "all",
+              appSlug: process.env.GITHUB_APP_SLUG || "cloud-worker-app",
+              createdAt: inst.created_at,
+              updatedAt: inst.updated_at,
+            });
+          } catch (err) {
+            console.warn(`[server] Failed to fetch installation ${body.installationId} during link:`, err);
+            return Response.json({ error: "Installation not found" }, { status: 404, headers: CORS_HEADERS });
           }
 
           await repo.linkUserInstallation(session.sub, body.installationId);

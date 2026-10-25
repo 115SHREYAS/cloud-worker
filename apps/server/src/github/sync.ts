@@ -64,17 +64,17 @@ export async function syncGitHubInstallations(
       await repo.saveInstallation(record);
       synced.push(record);
 
-      // Associate with current user if applicable
-      if (userId) {
-        const matchesUsername =
-          targetUser?.username &&
-          inst.account?.login &&
-          targetUser.username.toLowerCase() === inst.account.login.toLowerCase();
+      // Associate with current user only when the installation belongs to their
+      // own GitHub account. Never link by "only installation exists" — in a
+      // multi-tenant deployment that hands every new user the first account's
+      // repositories.
+      const matchesUsername =
+        targetUser?.username &&
+        inst.account?.login &&
+        targetUser.username.toLowerCase() === inst.account.login.toLowerCase();
 
-        // In single-tenant/dev mode, or if account names match, or if it's the only installation:
-        if (matchesUsername || installations.length === 1 || userId.startsWith("usr_dev_") || userId === "default") {
-          await repo.linkUserInstallation(userId, inst.id);
-        }
+      if (userId && matchesUsername) {
+        await repo.linkUserInstallation(userId, inst.id);
       }
     }
 

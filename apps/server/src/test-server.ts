@@ -295,6 +295,24 @@ async function runTests() {
     }
     console.log("Cross-user isolation verified (404 on direct access, task absent from other user's list)");
 
+    // 12. Task installation ownership: another user's installationId is rejected
+    console.log("\n12. Testing task creation rejects unlinked installations...");
+    const instTaskId = "task_inst_guard";
+    await repo.createTask(instTaskId, createTaskPayload, "agent/patch-inst", testUserId);
+    const foreignInstallRes = await fetch(`${BASE_URL}/api/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        repo: { owner: "acme-corp", repo: "payment-service", branch: "main", installationId: 987654 },
+        prompt: "test prompt for installation guard",
+        model: "codex",
+      }),
+    });
+    if (foreignInstallRes.status !== 400) {
+      throw new Error(`Expected 400 for task on unlinked installation, got ${foreignInstallRes.status}`);
+    }
+    console.log("Task creation correctly rejected unlinked installationId with 400");
+
     console.log("\nAll control plane and multi-turn follow-up tests passed successfully!");
   } finally {
     server.stop();
