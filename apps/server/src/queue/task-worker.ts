@@ -515,6 +515,7 @@ export class TaskWorker {
       let turn = 1;
       let currentPrompt = task.prompt;
       let pullRequestUrl: string | undefined = task.pullRequestUrl;
+      let lastFinalMessage: string | undefined;
       let totalInputTokens = 0;
       let totalOutputTokens = 0;
       let totalCostUsd = 0;
@@ -570,6 +571,12 @@ export class TaskWorker {
           baseBranch: task.repo.branch,
           signal: controller.signal,
           isContinue: turn > 1,
+          taskId,
+          onEvent: async (events) => {
+            for (const event of events) {
+              await this.emitAndLog(event);
+            }
+          },
           onStdout: async (data) => {
             await this.emitAndLog({
               type: "stdout",
@@ -592,6 +599,9 @@ export class TaskWorker {
 
         const result = await session.run(currentPrompt, { isContinue: turn > 1 });
         await stdoutParser.end().catch(() => {});
+        if (result.finalMessage) {
+          lastFinalMessage = result.finalMessage;
+        }
 
         // 7. Persist refreshed subscription tokens under the task owner. Credentials
         // can only come from the owner's own record, so attribution is always safe.
@@ -605,8 +615,15 @@ export class TaskWorker {
           console.log(`[task-worker] Updated refreshed auth session for ${provider}`);
         }
 
-        // Accumulate token usage
-        const turnUsage = estimateTokenUsage(result.stdout, result.stderr, currentPrompt);
+        // Accumulate token usage. Codex SDK runs report real counts per turn;
+        // CLI runs (claude, codex fallback) keep the stdout-based estimate.
+        const turnUsage: TokenUsage = result.sdkUsage
+          ? {
+              inputTokens: result.sdkUsage.inputTokens,
+              outputTokens: result.sdkUsage.outputTokens,
+              totalTokens: result.sdkUsage.totalTokens,
+            }
+          : estimateTokenUsage(result.stdout, result.stderr, currentPrompt);
         totalInputTokens += turnUsage.inputTokens;
         totalOutputTokens += turnUsage.outputTokens;
         totalCostUsd = Math.round((totalCostUsd + (turnUsage.estimatedCostUsd ?? 0)) * 10000) / 10000;
@@ -885,7 +902,9 @@ export class TaskWorker {
         await this.emitAndLog({
           type: "done",
           taskId,
-          summary: `Task finished successfully across ${turn} turn${turn > 1 ? "s" : ""}`,
+          summary:
+            lastFinalMessage ||
+            `Task finished successfully across ${turn} turn${turn > 1 ? "s" : ""}`,
           pullRequestUrl,
           tokenUsage: {
             inputTokens: totalInputTokens,
