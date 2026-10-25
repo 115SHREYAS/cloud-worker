@@ -1010,7 +1010,8 @@ export function createServer(options: ServerOptions) {
             if (errMsg.includes("Invalid x-hub-signature-256") || errMsg.includes("Missing x-hub-signature-256")) {
               return Response.json({ error: errMsg }, { status: 401, headers: CORS_HEADERS });
             }
-            return Response.json({ error: errMsg }, { status: 400, headers: CORS_HEADERS });
+            console.error("[server] Webhook processing error:", err);
+            return Response.json({ error: "Webhook processing failed" }, { status: 400, headers: CORS_HEADERS });
           }
         }
 
@@ -1322,9 +1323,10 @@ export function createServer(options: ServerOptions) {
 
         return new Response("Not Found", { status: 404, headers: CORS_HEADERS });
       } catch (err) {
+        // Log internally; never echo driver/paths/internal state to clients
         console.error("[server] Request handling error:", err);
         return Response.json(
-          { error: "Internal server error", details: String(err) },
+          { error: "Internal server error" },
           { status: 500, headers: CORS_HEADERS },
         );
       }
