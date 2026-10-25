@@ -76,6 +76,14 @@ export default function DashboardPage() {
         if (user) {
           setCurrentUser(user);
 
+          // Fresh signups go through guided setup (agent credentials + GitHub App
+          // install) before the workspace is usable — without this they land in an
+          // empty workspace with no repositories and no clear next step.
+          if (user.onboardingCompleted !== true) {
+            router.push("/onboarding");
+            return;
+          }
+
           // Load tasks and connected repositories for user
           await Promise.all([loadTasks(), loadRepositories()]);
         } else {
