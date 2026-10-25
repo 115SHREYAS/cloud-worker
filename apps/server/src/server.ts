@@ -740,8 +740,12 @@ export function createServer(options: ServerOptions) {
           return Response.json({ ok: true, provider, authMode }, { headers: CORS_HEADERS });
         }
 
-        // Detect local host credentials for Claude Code or Codex
+        // Detect local host credentials for Claude Code or Codex (dev only:
+        // reveals the server host's credential state to whoever is logged in)
         if (path === "/api/auth/provider/detect" && method === "GET") {
+          if (process.env.NODE_ENV === "production") {
+            return Response.json({ error: "Not Found" }, { status: 404, headers: CORS_HEADERS });
+          }
           if (!session) return unauthorized();
           try {
             const detected = await providerAuthRelay.detectLocalCredentials();
@@ -752,8 +756,14 @@ export function createServer(options: ServerOptions) {
           }
         }
 
-        // Import detected local credentials directly into user account
+        // Import detected local credentials directly into user account (dev only:
+        // in production this would copy the host operator's credentials into
+        // any requesting user's account)
         if (path === "/api/auth/provider/import-local" && method === "POST") {
+          if (process.env.NODE_ENV === "production") {
+            return Response.json({ error: "Not Found" }, { status: 404, headers: CORS_HEADERS });
+          }
+
           let body: { provider?: string } = {};
           try {
             body = (await req.json()) as { provider?: string };

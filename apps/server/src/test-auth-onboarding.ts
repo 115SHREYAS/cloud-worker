@@ -240,4 +240,39 @@ describe("User Authentication & Onboarding Controls", () => {
       server.stop();
     }
   });
+
+  it("gates host credential detection and import behind development", async () => {
+    const repo = new MemoryTaskRepository();
+    const eventBus = new MemoryEventBus();
+    const worker = new TaskWorker(repo, eventBus);
+    const queue = new DirectTaskQueue(worker);
+
+    const server = createServer({
+      port: 0,
+      repo,
+      eventBus,
+      queue,
+    });
+
+    const baseUrl = `http://localhost:${server.port}`;
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+
+    try {
+      // Host credential state and host credential import must not exist in
+      // production: they would hand any tenant the operator's CLI credentials.
+      const detectRes = await fetch(`${baseUrl}/api/auth/provider/detect`);
+      expect(detectRes.status).toBe(404);
+
+      const importRes = await fetch(`${baseUrl}/api/auth/provider/import-local`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "codex" }),
+      });
+      expect(importRes.status).toBe(404);
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+      server.stop();
+    }
+  });
 });

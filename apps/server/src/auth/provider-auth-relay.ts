@@ -358,29 +358,31 @@ class ProviderAuthRelay {
   }
 
   /**
-   * Runs the Claude CLI login flow.
+   * Runs the Claude CLI login flow inside a throwaway HOME so credentials are
+   * written per-flow. The CLI must never touch the shared host ~/.claude.json —
+   * in a multi-tenant deployment that file would hand every later user the
+   * first user's Claude credential.
    */
   private async runClaudeAuth(repo: TaskRepository, entry: ActiveFlowEntry): Promise<void> {
     const { flow } = entry;
     const isWindows = process.platform === "win32";
     const command = isWindows ? "claude.exe" : "claude";
 
-    // First check if claude is already authenticated on the host
-    const detected = await this.detectLocalCredentials();
-    const claudeDetected = detected.find((d) => d.provider === "claude");
-
-    if (claudeDetected) {
-      await this.importLocalCredentials(repo, "claude", flow.userId);
-      flow.phase = "succeeded";
-      flow.message = "Connected successfully using local Claude credentials.";
-      return;
-    }
+    const tempDir = join(tmpdir(), `claude_auth_${flow.id}`);
+    await fs.mkdir(tempDir, { recursive: true });
+    entry.tempDir = tempDir;
 
     flow.phase = "waiting_for_user";
     flow.message = "Starting Claude login. Complete sign-in in your browser.";
 
     const proc = spawn(command, ["auth", "login", "--claudeai"], {
       shell: isWindows,
+      env: {
+        ...process.env,
+        HOME: tempDir,
+        USERPROFILE: tempDir,
+        CLAUDE_CONFIG_DIR: join(tempDir, ".claude"),
+      },
     });
 
     entry.process = proc;
@@ -389,9 +391,20 @@ class ProviderAuthRelay {
       proc.on("close", async (exitCode) => {
         try {
           if (exitCode === 0) {
-            await this.importLocalCredentials(repo, "claude", flow.userId);
-            flow.phase = "succeeded";
-            flow.message = "Successfully authenticated with Claude Code!";
+            const authJson = await this.readIsolatedClaudeCredential(tempDir);
+            if (authJson) {
+              await repo.saveAuthSession("claude", authJson, flow.userId, "subscription");
+              try {
+                await repo.updateUser(flow.userId, { defaultModel: "claude", defaultAuthMode: "subscription" });
+              } catch {
+                // Ignore if user record is not yet created
+              }
+              flow.phase = "succeeded";
+              flow.message = "Successfully authenticated with Claude Code!";
+            } else {
+              flow.phase = "failed";
+              flow.error = "Login succeeded but no credential file was created.";
+            }
           } else if (flow.phase !== "cancelled") {
             flow.phase = "failed";
             flow.error = `Claude login exited with code ${exitCode}`;
@@ -400,6 +413,11 @@ class ProviderAuthRelay {
           flow.phase = "failed";
           flow.error = err instanceof Error ? err.message : String(err);
         } finally {
+          try {
+            await fs.rm(tempDir, { recursive: true, force: true });
+          } catch {
+            // Ignore cleanup failure
+          }
           resolve();
         }
       });
@@ -410,6 +428,29 @@ class ProviderAuthRelay {
         resolve();
       });
     });
+  }
+
+  /**
+   * Reads the credential the isolated Claude CLI wrote into the flow's temp
+   * HOME. Only this directory is ever read — never the host machine's files.
+   */
+  private async readIsolatedClaudeCredential(tempDir: string): Promise<string | null> {
+    const candidates = [
+      join(tempDir, ".claude.json"),
+      join(tempDir, ".claude", ".credentials.json"),
+      join(tempDir, ".claude", "config.json"),
+    ];
+    for (const path of candidates) {
+      try {
+        const content = await fs.readFile(path, "utf8");
+        if (content.trim().length > 0) {
+          return content;
+        }
+      } catch {
+        // Try next candidate
+      }
+    }
+    return null;
   }
 
   /**
