@@ -216,5 +216,59 @@ describe("Domain contracts (@cloud-worker/shared)", () => {
     });
     expect(turnStartEvent.type).toBe("turn_start");
   });
+
+  it("validates structured agent output and token usage events", () => {
+    // 1. agent_message event (final assistant text from a structured harness)
+    const messageEvent = StreamEventSchema.parse({
+      type: "agent_message",
+      taskId: "task-1",
+      message: "Fixed the failing test by correcting the add() implementation.",
+      timestamp: Date.now(),
+    });
+    expect(messageEvent.type).toBe("agent_message");
+    if (messageEvent.type === "agent_message") {
+      expect(messageEvent.message).toContain("Fixed the failing test");
+    }
+
+    // 2. usage event with real token counts from the harness
+    const usageEvent = StreamEventSchema.parse({
+      type: "usage",
+      taskId: "task-1",
+      inputTokens: 12000,
+      cachedInputTokens: 9500,
+      outputTokens: 2300,
+      totalTokens: 14300,
+      model: "gpt-5.6-luna",
+      timestamp: Date.now(),
+    });
+    expect(usageEvent.type).toBe("usage");
+    if (usageEvent.type === "usage") {
+      expect(usageEvent.totalTokens).toBe(14300);
+      expect(usageEvent.cachedInputTokens).toBe(9500);
+    }
+
+    // 3. usage event without optional fields still validates
+    const minimalUsage = StreamEventSchema.parse({
+      type: "usage",
+      taskId: "task-1",
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+      timestamp: Date.now(),
+    });
+    expect(minimalUsage.type).toBe("usage");
+
+    // 4. usage event rejects negative token counts
+    expect(() => {
+      StreamEventSchema.parse({
+        type: "usage",
+        taskId: "task-1",
+        inputTokens: -1,
+        outputTokens: 5,
+        totalTokens: 4,
+        timestamp: Date.now(),
+      });
+    }).toThrow();
+  });
 });
 
