@@ -313,6 +313,17 @@ async function runTests() {
     }
     console.log("Task creation correctly rejected unlinked installationId with 400");
 
+    // 13. Branch listing scoping: another user's installationId is rejected
+    console.log("\n13. Testing branches endpoint rejects unlinked installations...");
+    const foreignBranchRes = await fetch(
+      `${BASE_URL}/api/github/branches?owner=acme-corp&repo=payment-service&installationId=987654`,
+      { headers: authHeaders },
+    );
+    if (foreignBranchRes.status !== 403) {
+      throw new Error(`Expected 403 for branches on unlinked installation, got ${foreignBranchRes.status}`);
+    }
+    console.log("Branch listing correctly rejected unlinked installationId with 403");
+
     console.log("\nAll control plane and multi-turn follow-up tests passed successfully!");
   } finally {
     server.stop();

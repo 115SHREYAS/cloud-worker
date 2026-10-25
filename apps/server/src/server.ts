@@ -1189,8 +1189,19 @@ export function createServer(options: ServerOptions) {
 
           let installationId = requestedInstallationId ? parseInt(requestedInstallationId, 10) : undefined;
 
-          if (!installationId) {
-            const userInstalls = await repo.listUserInstallations(session.sub);
+          const userInstalls = await repo.listUserInstallations(session.sub);
+
+          if (installationId) {
+            // A client-supplied installation id must be one of the user's own;
+            // otherwise this endpoint leaks branch names of other accounts'
+            // private repositories.
+            if (!userInstalls.some((i) => i.id === installationId)) {
+              return Response.json(
+                { error: "Installation not linked to your account" },
+                { status: 403, headers: CORS_HEADERS },
+              );
+            }
+          } else {
             const matchingInst = userInstalls.find(
               (i) => i.accountLogin.toLowerCase() === owner.toLowerCase(),
             );
