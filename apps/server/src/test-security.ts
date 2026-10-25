@@ -435,6 +435,57 @@ describe("Phase 6 Security & Hardening Controls", () => {
     }
   });
 
+  it("rejects the oauth callback when the state does not match the initiation cookie", async () => {
+    const repo = new MemoryTaskRepository();
+    const eventBus = new MemoryEventBus();
+    const worker = new TaskWorker(repo, eventBus);
+    const queue = new DirectTaskQueue(worker);
+    const server = createServer({ port: 0, repo, eventBus, queue });
+    const baseUrl = `http://localhost:${server.port}`;
+
+    const previousClientId = process.env.GITHUB_CLIENT_ID;
+    const previousClientSecret = process.env.GITHUB_CLIENT_SECRET;
+    process.env.GITHUB_CLIENT_ID = "test-client-id";
+    process.env.GITHUB_CLIENT_SECRET = "test-client-secret";
+
+    try {
+      // Initiation plants the state cookie
+      const initRes = await fetch(`${baseUrl}/api/auth/github`, { redirect: "manual" });
+      expect(initRes.status).toBe(302);
+      const stateCookie = (initRes.headers.getSetCookie?.() ?? []).find((c) =>
+        c.startsWith("cw_oauth_state="),
+      );
+      if (!stateCookie) throw new Error("initiation did not set the oauth state cookie");
+      const state = /cw_oauth_state=([^;]+)/.exec(stateCookie)?.[1] ?? "";
+
+      // Callback without the matching state is refused (login CSRF guard)
+      const badRes = await fetch(
+        `${baseUrl}/api/auth/callback/github?code=x&state=WRONGSTATE`,
+        { redirect: "manual" },
+      );
+      expect(badRes.status).toBe(302);
+      expect(badRes.headers.get("location")).toContain("error=oauth_state_mismatch");
+
+      // Matching state passes the guard and proceeds to the token exchange
+      // (which fails against the fake client id, but NOT with a state error)
+      const goodRes = await fetch(
+        `${baseUrl}/api/auth/callback/github?code=x&state=${state}`,
+        {
+          redirect: "manual",
+          headers: { cookie: `cw_oauth_state=${state}` },
+        },
+      );
+      const goodLocation = goodRes.headers.get("location") ?? "";
+      expect(goodLocation).not.toContain("oauth_state_mismatch");
+    } finally {
+      if (previousClientId === undefined) delete process.env.GITHUB_CLIENT_ID;
+      else process.env.GITHUB_CLIENT_ID = previousClientId;
+      if (previousClientSecret === undefined) delete process.env.GITHUB_CLIENT_SECRET;
+      else process.env.GITHUB_CLIENT_SECRET = previousClientSecret;
+      server.stop();
+    }
+  });
+
   it("destroys sandbox instance immediately on cancel", () => {
     const repo = new MemoryTaskRepository();
     const eventBus = new MemoryEventBus();

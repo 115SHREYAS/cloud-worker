@@ -20,8 +20,11 @@ import {
   parseCookies,
   createSessionCookie,
   createLogoutCookie,
+  createOAuthStateCookie,
+  createClearOAuthStateCookie,
   type SessionPayload,
 } from "./security/session.ts";
+import { randomBytes } from "crypto";
 import { providerAuthRelay } from "./auth/provider-auth-relay.ts";
 import type { TaskWorker } from "./queue/task-worker.ts";
 
@@ -431,7 +434,9 @@ export function createServer(options: ServerOptions) {
             );
           }
 
-          const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+          // Cryptographically random state, stored in a short-lived HttpOnly
+          // cookie; the callback rejects the exchange unless it round-trips
+          const state = randomBytes(16).toString("hex");
           // Deterministic public origin when APP_URL is set (e.g. https://app.yourdomain.com);
           // falls back to proxy headers / request origin for local development
           const forwardedHost = req.headers.get("x-forwarded-host");
@@ -451,6 +456,7 @@ export function createServer(options: ServerOptions) {
             headers: {
               ...CORS_HEADERS,
               Location: githubAuthUrl,
+              "Set-Cookie": createOAuthStateCookie(state),
             },
           });
         }
@@ -474,6 +480,20 @@ export function createServer(options: ServerOptions) {
 
           if (!code || !clientId || !clientSecret) {
             return Response.redirect(`${clientOrigin}/login?error=missing_oauth_code`, 302);
+          }
+
+          // Reject the exchange unless the state round-trips through GitHub and
+          // matches the initiation cookie — prevents login CSRF
+          const oauthState = url.searchParams.get("state");
+          const cookieState = parseCookies(req.headers.get("cookie")).cw_oauth_state;
+          if (!oauthState || !cookieState || oauthState !== cookieState) {
+            return new Response(null, {
+              status: 302,
+              headers: {
+                Location: `${clientOrigin}/login?error=oauth_state_mismatch`,
+                "Set-Cookie": createClearOAuthStateCookie(),
+              },
+            });
           }
 
           try {
@@ -559,7 +579,7 @@ export function createServer(options: ServerOptions) {
               headers: {
                 ...CORS_HEADERS,
                 Location: `${clientOrigin}${targetPath}`,
-                "Set-Cookie": createSessionCookie(sessionToken),
+                "Set-Cookie": [createSessionCookie(sessionToken), createClearOAuthStateCookie()],
               },
             });
           } catch (oauthErr) {
