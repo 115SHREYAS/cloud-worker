@@ -5,6 +5,30 @@ import { SandboxScavenger } from "./queue/sandbox-cleaner.ts";
 import { MemoryTaskRepository, createTaskRepository } from "./db/repository.ts";
 import { syncGitHubInstallations } from "./github/sync.ts";
 import type { GitHubTokenManager } from "./github/token-manager.ts";
+
+function fakeSetupTokenManager(): GitHubTokenManager {
+  return {
+    isConfigured: () => true,
+    getAppOctokit: () => ({
+      rest: {
+        apps: {
+          getInstallation: async ({ installation_id }: { installation_id: number }) => ({
+            data: {
+              id: installation_id,
+              account:
+                installation_id === 322
+                  ? { login: "setup-tester", type: "User" }
+                  : { login: "victim", type: "User" },
+              repository_selection: "all",
+              created_at: "2026-01-01T00:00:00Z",
+              updated_at: "2026-01-01T00:00:00Z",
+            },
+          }),
+        },
+      },
+    }),
+  } as unknown as GitHubTokenManager;
+}
 import { MemoryEventBus } from "./events/event-bus.ts";
 import { DirectTaskQueue } from "./queue/task-queue.ts";
 import { TaskWorker } from "./queue/task-worker.ts";
@@ -363,6 +387,46 @@ describe("Phase 6 Security & Hardening Controls", () => {
     const aliceInstalls = await repo.listUserInstallations("usr_alice");
     expect(aliceInstalls.length).toBe(1);
     expect(aliceInstalls[0]?.id).toBe(501);
+  });
+
+  it("links a setup installation only when it verifiably belongs to the session user", async () => {
+    const repo = new MemoryTaskRepository();
+    const eventBus = new MemoryEventBus();
+    const worker = new TaskWorker(repo, eventBus);
+    const queue = new DirectTaskQueue(worker);
+    const tokenManager = fakeSetupTokenManager();
+
+    const server = createServer({ port: 0, repo, eventBus, queue, tokenManager });
+    const baseUrl = `http://localhost:${server.port}`;
+    const token = createSessionToken({
+      sub: "usr_setup_test",
+      username: "setup-tester",
+      email: "s@example.com",
+      avatarUrl: "",
+    });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    try {
+      // Someone else's installation: must not be linked to the session user
+      const victimRes = await fetch(`${baseUrl}/api/github/setup?installation_id=321`, {
+        headers,
+        redirect: "manual",
+      });
+      expect(victimRes.status).toBe(302);
+      expect(await repo.listUserInstallations("usr_setup_test")).toHaveLength(0);
+
+      // The user's own installation: linked
+      const ownRes = await fetch(`${baseUrl}/api/github/setup?installation_id=322`, {
+        headers,
+        redirect: "manual",
+      });
+      expect(ownRes.status).toBe(302);
+      const linked = await repo.listUserInstallations("usr_setup_test");
+      expect(linked).toHaveLength(1);
+      expect(linked[0]?.id).toBe(322);
+    } finally {
+      server.stop();
+    }
   });
 
   it("destroys sandbox instance immediately on cancel", () => {

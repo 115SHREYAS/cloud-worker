@@ -1008,6 +1008,12 @@ export function createServer(options: ServerOptions) {
           if (installationId) {
             const parsedId = parseInt(installationId, 10);
             if (!isNaN(parsedId)) {
+              // An installation may be linked to the session user only when it
+              // belongs to their own GitHub account. The installation_id comes
+              // from the query string, so without this check any authenticated
+              // user could attach another account's installation (and clone its
+              // private repositories) by guessing the sequential id.
+              let verifiedAccountLogin: string | null = null;
               if (tokenManager && tokenManager.isConfigured()) {
                 try {
                   const octokit = tokenManager.getAppOctokit();
@@ -1022,11 +1028,22 @@ export function createServer(options: ServerOptions) {
                     createdAt: inst.created_at,
                     updatedAt: inst.updated_at,
                   });
+                  verifiedAccountLogin = accountInfo.login;
                 } catch (err) {
                   console.warn(`[server] Failed to fetch installation ${parsedId} during setup redirect:`, err);
                 }
               }
-              if (session) {
+
+              const ownerMatch =
+                session &&
+                verifiedAccountLogin &&
+                verifiedAccountLogin.toLowerCase() === session.username.toLowerCase();
+              if (session && verifiedAccountLogin && !ownerMatch) {
+                console.warn(
+                  `[server] Refused linking installation ${parsedId} (${verifiedAccountLogin}) to user ${session.username}`,
+                );
+              }
+              if (ownerMatch) {
                 await repo.linkUserInstallation(session.sub, parsedId);
               }
             }
