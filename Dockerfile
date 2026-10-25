@@ -4,6 +4,13 @@
 # Node 22: pnpm 11 requires it (fails on Node 20 with ERR_UNKNOWN_BUILTIN_MODULE)
 FROM node:22-slim
 
+# System CA store for non-node binaries. The codex CLI is a Rust binary that
+# uses native TLS roots (node bundles its own, so npm worked without this);
+# without it every codex HTTPS call fails with "error sending request".
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # bun is the server runtime (node stays for corepack/pnpm and the agent CLIs)

@@ -637,7 +637,7 @@ function OnboardingWizard() {
                 Configure your default agent and credentials
               </h1>
               <p className="text-sm text-zinc-400 max-w-2xl leading-relaxed">
-                Select your preferred coding agent harness. You can run under your existing subscription quota at zero API cost, or bring your own API keys.
+                Pick the agent your tasks will run with. Sign in with your own ChatGPT or Claude subscription, or use an API key.
               </p>
             </div>
 
@@ -669,7 +669,7 @@ function OnboardingWizard() {
                     )}
                   </div>
                   <p className="text-xs text-zinc-400 leading-relaxed">
-                    Uses OpenAI Codex with o3-mini or GPT-4o models. Supports ChatGPT Plus, Pro, and Team subscriptions.
+                    Runs tasks with the Codex CLI. Works with ChatGPT Plus, Pro, and Team plans.
                   </p>
                 </button>
 
@@ -691,7 +691,7 @@ function OnboardingWizard() {
                     )}
                   </div>
                   <p className="text-xs text-zinc-400 leading-relaxed">
-                    Uses Anthropic Claude 3.7 Sonnet agent harness. Supports Claude Pro and Team subscriptions or Anthropic API keys.
+                    Runs tasks with the Claude Code CLI. Works with Claude Pro and Team plans, or an Anthropic API key.
                   </p>
                 </button>
               </div>
@@ -704,7 +704,7 @@ function OnboardingWizard() {
                       Authentication style
                     </h2>
                     <p className="text-xs text-zinc-400">
-                      Choose how the agent authenticates inside the microVM.
+                      Sign in with your subscription, or paste an API key.
                     </p>
                   </div>
 
@@ -751,11 +751,11 @@ function OnboardingWizard() {
                           </span>
                         </div>
                         <p className="text-xs text-zinc-300 leading-relaxed">
-                          We found an active {selectedProvider === "codex" ? "ChatGPT / Codex" : "Claude Code"} session on this machine
+                          Found a signed-in {selectedProvider === "codex" ? "Codex" : "Claude Code"} session on this computer
                           {detectedAuths.find((d) => d.provider === selectedProvider)?.email
                             ? ` (${detectedAuths.find((d) => d.provider === selectedProvider)?.email})`
                             : ""}
-                          . Connect instantly with zero configuration.
+                          . Use it to connect.
                         </p>
                         <button
                           type="button"
@@ -764,7 +764,7 @@ function OnboardingWizard() {
                           className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium cursor-pointer transition-colors shadow-xs shadow-blue-500/20 disabled:opacity-50"
                         >
                           {isImportingLocal ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-                          <span>Connect from Local Session & Continue</span>
+                          <span>Use this session</span>
                         </button>
                       </div>
                     )}
@@ -772,16 +772,11 @@ function OnboardingWizard() {
                     {/* 2. Interactive Browser Sign-In Card */}
                     {!activeFlow ? (
                       <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-zinc-200">
-                            Browser Sign-In Flow
-                          </span>
-                          <span className="text-[11px] font-mono text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
-                            Zero API Cost
-                          </span>
-                        </div>
+                        <span className="text-xs font-semibold text-zinc-200">
+                          Browser Sign-In Flow
+                        </span>
                         <p className="text-xs text-zinc-400 leading-relaxed">
-                          Sign in with your {selectedProvider === "codex" ? "OpenAI ChatGPT (Plus/Pro)" : "Anthropic Claude"} subscription directly in your browser. We handle token exchange and inject credentials automatically into your workers.
+                          Opens the {selectedProvider === "codex" ? "OpenAI" : "Anthropic"} sign-in page. Approve there and this page continues on its own.
                         </p>
                         <button
                           type="button"
@@ -855,7 +850,7 @@ function OnboardingWizard() {
                         )}
 
                         <p className="text-[11px] text-zinc-400 text-center">
-                          Approve in your browser. Once complete, you will enter the dashboard automatically.
+                          Open the link, enter the code, and approve. This page continues on its own.
                         </p>
                       </div>
                     )}
@@ -893,6 +888,39 @@ function OnboardingWizard() {
                             }
                             className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 placeholder-zinc-500 focus:border-blue-500 focus:outline-hidden resize-none leading-relaxed"
                           />
+                          <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 space-y-1.5">
+                            <p className="text-xs font-medium text-zinc-300">
+                              Don&apos;t have the CLI installed? Get the credential in three steps:
+                            </p>
+                            {selectedProvider === "codex" ? (
+                              <ol className="list-decimal list-inside text-[11px] text-zinc-400 leading-relaxed space-y-1">
+                                <li>
+                                  Install the CLI: <code className="font-mono text-zinc-300">npm install -g @openai/codex</code>
+                                </li>
+                                <li>
+                                  Run <code className="font-mono text-zinc-300">codex login</code> and sign in with your ChatGPT account in the browser it opens
+                                </li>
+                                <li>
+                                  Open the file it created, copy all of it, and paste it in the box above:
+                                  <div className="font-mono text-zinc-500 mt-0.5">{"Windows: C:\\Users\\<name>\\.codex\\auth.json"}</div>
+                                  <div className="font-mono text-zinc-500">macOS / Linux: ~/.codex/auth.json</div>
+                                </li>
+                              </ol>
+                            ) : (
+                              <ol className="list-decimal list-inside text-[11px] text-zinc-400 leading-relaxed space-y-1">
+                                <li>
+                                  Install the CLI: <code className="font-mono text-zinc-300">npm install -g @anthropic-ai/claude-code</code>
+                                </li>
+                                <li>
+                                  Run <code className="font-mono text-zinc-300">claude setup-token</code> and sign in with your Claude account in the browser it opens
+                                </li>
+                                <li>
+                                  Copy the token it prints (starts with <span className="font-mono text-zinc-300">sk-ant-oat01-</span>) and paste it in the box above
+                                </li>
+                              </ol>
+                            )}
+                            <p className="text-[11px] text-zinc-500">Both commands need Node.js installed first (nodejs.org).</p>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -926,7 +954,7 @@ function OnboardingWizard() {
                       className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 placeholder-zinc-500 focus:border-blue-500 focus:outline-hidden"
                     />
                     <p className="text-[11px] text-zinc-500">
-                      Standard usage-based API key from the {selectedProvider === "codex" ? "OpenAI Platform" : "Anthropic Console"}.
+                      Pay-per-use key, billed to that {selectedProvider === "codex" ? "OpenAI" : "Anthropic"} account.
                     </p>
                   </div>
                 )}
