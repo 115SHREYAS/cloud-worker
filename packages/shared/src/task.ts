@@ -13,11 +13,16 @@ export const TaskStatusSchema = z.enum([
 
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
+// Git identifiers interpolated into shell commands downstream must never carry
+// shell metacharacters; restrict to the character class git itself uses.
+const GIT_REF_PATTERN = /^[A-Za-z0-9._\-/]+$/;
+const GIT_NAME_PATTERN = /^[A-Za-z0-9._\-]+$/;
+
 export const RepoRefSchema = z.object({
-  owner: z.string().min(1, "Repository owner is required"),
-  repo: z.string().min(1, "Repository name is required"),
-  branch: z.string().min(1).default("main"),
-  baseCommit: z.string().optional(),
+  owner: z.string().min(1, "Repository owner is required").regex(GIT_NAME_PATTERN, "Owner contains invalid characters"),
+  repo: z.string().min(1, "Repository name is required").regex(GIT_NAME_PATTERN, "Repository name contains invalid characters"),
+  branch: z.string().min(1).regex(GIT_REF_PATTERN, "Branch contains invalid characters").default("main"),
+  baseCommit: z.string().regex(GIT_REF_PATTERN, "Base commit contains invalid characters").optional(),
   installationId: z.number().int().positive().optional(),
 });
 
