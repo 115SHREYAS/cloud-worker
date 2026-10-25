@@ -22,6 +22,7 @@ import {
   GitBranch,
   Flame,
   Bot,
+  Zap,
 } from "lucide-react";
 
 export interface AgentStreamViewProps {
@@ -60,6 +61,7 @@ export interface StreamItem {
   exitCode?: number;
   isError?: boolean;
   status?: "running" | "completed" | "failed";
+  changeKind?: "add" | "update" | "delete";
   timestamp: number;
   turn: number;
 }
@@ -153,6 +155,14 @@ function useProcessedStreamItems({
           timestamp: event.timestamp,
           turn: activeTurn,
         });
+      } else if (event.type === "agent_message") {
+        turnGroup.items.push({
+          id: `evt-msg-${i}`,
+          type: "message",
+          content: event.message,
+          timestamp: event.timestamp,
+          turn: activeTurn,
+        });
       } else if (event.type === "tool_call") {
         const isBash = event.tool === "bash";
         const isEdit = event.tool === "write_file";
@@ -169,6 +179,11 @@ function useProcessedStreamItems({
           (event.args.filePath as string) ||
           "";
         const q = (event.args.query as string) || (event.args.regex as string) || "";
+        const rawChange = event.args.change as string | undefined;
+        const changeKind =
+          rawChange === "add" || rawChange === "update" || rawChange === "delete"
+            ? rawChange
+            : undefined;
 
         turnGroup.items.push({
           id: event.callId || `evt-tool-${i}`,
@@ -184,6 +199,7 @@ function useProcessedStreamItems({
           command: cmd,
           filePath: path,
           query: q,
+          changeKind,
           status: "running",
           timestamp: event.timestamp,
           turn: activeTurn,
@@ -614,6 +630,24 @@ export function AgentStreamView({
   const isRunning = status === "running" || status === "provisioning" || status === "cloning";
   const isWaiting = status === "waiting_input";
 
+  // Real token usage relayed by the Codex SDK runner (sums across turns)
+  const tokenUsage = useMemo(() => {
+    let input = 0;
+    let output = 0;
+    let cached = 0;
+    for (const event of events) {
+      if (event.type === "usage") {
+        input += event.inputTokens;
+        output += event.outputTokens;
+        cached += event.cachedInputTokens ?? 0;
+      }
+    }
+    return input + output > 0 ? { input, output, cached } : null;
+  }, [events]);
+
+  const formatTokens = (count: number): string =>
+    count >= 1000 ? `${(count / 1000).toFixed(1)}k` : String(count);
+
   // Auto-scroll handler
   useEffect(() => {
     if (!userHasScrolledUp && scrollViewportRef.current) {
@@ -713,6 +747,19 @@ export function AgentStreamView({
             <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-950/60 border border-purple-800/60 font-mono text-[11px] text-purple-300">
               <Brain className="w-3 h-3 text-purple-400" />
               Reasoning: {task.reasoningEffort}
+            </span>
+          )}
+
+          {tokenUsage && (
+            <span
+              className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-800/60 font-mono text-[11px] text-emerald-300"
+              title={`Input ${tokenUsage.input.toLocaleString()} · Output ${tokenUsage.output.toLocaleString()} · Cached ${tokenUsage.cached.toLocaleString()} tokens (reported by the Codex harness)`}
+            >
+              <Zap className="w-3 h-3 text-emerald-400" />
+              {formatTokens(tokenUsage.input)} in · {formatTokens(tokenUsage.output)} out
+              {tokenUsage.cached > 0 && (
+                <span className="text-emerald-500/80">· {formatTokens(tokenUsage.cached)} cached</span>
+              )}
             </span>
           )}
 
@@ -931,7 +978,11 @@ export function AgentStreamView({
                         </span>
                         <div className="min-w-0 flex items-center gap-2">
                           <span className="text-[10px] font-mono uppercase tracking-wider text-blue-400 font-semibold">
-                            Modified
+                            {item.changeKind === "add"
+                              ? "Created"
+                              : item.changeKind === "delete"
+                              ? "Deleted"
+                              : "Modified"}
                           </span>
                           <span className="text-xs font-mono font-medium text-zinc-200 truncate">
                             {item.filePath}
