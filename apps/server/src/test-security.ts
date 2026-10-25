@@ -486,6 +486,39 @@ describe("Phase 6 Security & Hardening Controls", () => {
     }
   });
 
+  it("reflects only allowlisted origins in CORS headers", async () => {
+    const repo = new MemoryTaskRepository();
+    const eventBus = new MemoryEventBus();
+    const worker = new TaskWorker(repo, eventBus);
+    const queue = new DirectTaskQueue(worker);
+    const server = createServer({ port: 0, repo, eventBus, queue });
+    const baseUrl = `http://localhost:${server.port}`;
+
+    const previousAppUrl = process.env.APP_URL;
+    process.env.APP_URL = "https://cloudworker.example.dev";
+
+    try {
+      // Allowlisted origin is reflected
+      const allowed = await fetch(`${baseUrl}/health`, {
+        headers: { origin: "https://cloudworker.example.dev" },
+      });
+      expect(allowed.headers.get("access-control-allow-origin")).toBe("https://cloudworker.example.dev");
+
+      // Unknown origin gets no ACAO: browsers block the read
+      const denied = await fetch(`${baseUrl}/health`, {
+        headers: { origin: "https://evil.example" },
+      });
+      expect(denied.headers.get("access-control-allow-origin")).toBeNull();
+
+      // Same-origin (no Origin header) works without CORS headers
+      const direct = await fetch(`${baseUrl}/health`);
+      expect(direct.status).toBe(200);
+    } finally {
+      process.env.APP_URL = previousAppUrl;
+      server.stop();
+    }
+  });
+
   it("destroys sandbox instance immediately on cancel", () => {
     const repo = new MemoryTaskRepository();
     const eventBus = new MemoryEventBus();
