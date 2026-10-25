@@ -87,6 +87,7 @@ describe("Phase 6 Security & Hardening Controls", () => {
       NODE_ENV: "production",
       E2B_API_KEY: "e2b_test_key",
       DATABASE_URL: "postgres://localhost:5432/test",
+      GITHUB_WEBHOOK_SECRET: "whsec_test_value",
     };
 
     // Neither secret set
@@ -102,7 +103,12 @@ describe("Phase 6 Security & Hardening Controls", () => {
       loadConfig({ ...prodBase, SESSION_SECRET: "short", ENCRYPTION_KEY: "k".repeat(32) }),
     ).toThrow(/SESSION_SECRET/);
 
-    // Valid 32+ character secrets boot cleanly
+    // Webhook secret missing is fatal: without it forged GitHub events are accepted
+    const noWebhookSecret = { ...prodBase, SESSION_SECRET: "s".repeat(48), ENCRYPTION_KEY: "k".repeat(48) };
+    delete (noWebhookSecret as { GITHUB_WEBHOOK_SECRET?: string }).GITHUB_WEBHOOK_SECRET;
+    expect(() => loadConfig(noWebhookSecret)).toThrow(/GITHUB_WEBHOOK_SECRET/);
+
+    // Valid secrets boot cleanly
     const ok = loadConfig({
       ...prodBase,
       SESSION_SECRET: "s".repeat(48),

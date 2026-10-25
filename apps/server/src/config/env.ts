@@ -84,6 +84,9 @@ export function loadConfig(env = process.env): ServerEnvironment {
     if (!config.ENCRYPTION_KEY || config.ENCRYPTION_KEY.length < 32) {
       invalidSecrets.push("ENCRYPTION_KEY (min 32 chars)");
     }
+    if (!config.GITHUB_WEBHOOK_SECRET) {
+      invalidSecrets.push("GITHUB_WEBHOOK_SECRET");
+    }
     if (invalidSecrets.length > 0) {
       throw new Error(
         `Refusing to start in production: set ${invalidSecrets.join(" and ")}. ` +
