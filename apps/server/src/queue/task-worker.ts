@@ -411,6 +411,42 @@ export class TaskWorker {
       return;
     }
 
+    // A worker already owns this task in this process; a duplicate delivery
+    // must not start a second execution alongside it.
+    if (this.activeControllers.has(taskId)) {
+      return;
+    }
+
+    // Guard against queue redelivery after a server restart: BullMQ re-enqueues
+    // jobs whose worker process died mid-flight (e.g. a task parked in the
+    // warm-input window). Re-executing would spend the owner's tokens again and
+    // fork the working branch history, so orphaned in-flight tasks fail instead.
+    if (task.status !== "pending") {
+      const interruptMsg =
+        "Task execution was interrupted by a server restart before it could finish. Start a new task to continue.";
+      await this.repo.updateTask(taskId, {
+        status: "failed",
+        error: interruptMsg,
+        completedAt: new Date().toISOString(),
+        warmExpiresAt: undefined,
+        queuedPrompt: undefined,
+      });
+      await this.emitAndLog({
+        type: "status",
+        taskId,
+        status: "failed",
+        message: interruptMsg,
+        timestamp: Date.now(),
+      });
+      await this.emitAndLog({
+        type: "error",
+        taskId,
+        message: interruptMsg,
+        timestamp: Date.now(),
+      });
+      return;
+    }
+
     const controller = new AbortController();
     this.activeControllers.set(taskId, controller);
     this.sessionStartTimes.set(taskId, Date.now());
