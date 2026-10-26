@@ -58,6 +58,12 @@ export function useTaskStream(
     onChunkRef.current = options?.onChunk;
   }, [options?.onChunk]);
 
+  // Guards against duplicate structured events: the SSE route replays saved
+  // logs on every (re)connect, so an EventSource auto-reconnect mid-task
+  // re-delivers the full history. Replayed events are JSON-identical to the
+  // originals, so exact-JSON equality identifies them.
+  const seenEventKeysRef = useRef<Set<string>>(new Set());
+
   const clearTerminal = useCallback(() => {
     setTerminalBuffer("");
   }, []);
@@ -74,6 +80,7 @@ export function useTaskStream(
 
   useEffect(() => {
     if (!taskId) return;
+    seenEventKeysRef.current = new Set();
 
     const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
     const streamUrl = `${API_BASE}/api/tasks/${taskId}/stream`;
@@ -97,6 +104,9 @@ export function useTaskStream(
 
         // Only store structured events in the events array to prevent unbounded memory growth
         if (event.type !== "stdout" && event.type !== "stderr") {
+          const dedupeKey = JSON.stringify(event);
+          if (seenEventKeysRef.current.has(dedupeKey)) return;
+          seenEventKeysRef.current.add(dedupeKey);
           setEvents((prev) => [...prev, event]);
         }
 

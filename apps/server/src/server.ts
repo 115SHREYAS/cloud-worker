@@ -9,6 +9,7 @@ import {
 import type { AgentProvider } from "@cloud-worker/sandbox";
 import type { TaskRepository } from "./db/repository.ts";
 import type { EventBus } from "./events/event-bus.ts";
+import { dedupeReplayOverlap } from "./events/replay.ts";
 import type { TaskQueue } from "./queue/task-queue.ts";
 import type { GitHubTokenManager } from "./github/token-manager.ts";
 import { handleGitHubWebhook, syncGitHubInstallations, extractAccountInfo } from "./github/index.ts";
@@ -232,9 +233,10 @@ export function createServer(options: ServerOptions) {
                 sendEvent(log);
               }
 
-              // Replay buffered live events that arrived during the DB fetch
+              // Replay buffered live events that arrived during the DB fetch,
+              // skipping ones the log snapshot already captured
               isReplaying = false;
-              for (const liveEvent of liveBuffer) {
+              for (const liveEvent of dedupeReplayOverlap(logs, liveBuffer)) {
                 sendEvent(liveEvent);
               }
 
