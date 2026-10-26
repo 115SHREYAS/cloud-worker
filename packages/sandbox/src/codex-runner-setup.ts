@@ -53,10 +53,19 @@ export async function ensureCodexSdkRunner(sandbox: SandboxManager): Promise<boo
   );
   await sandbox.writeFile(CODEX_RUNNER_SCRIPT, await loadRunnerSource());
 
-  const install = await sandbox.exec(
+  // npm inside the microVM occasionally fails with transient SSL/cipher
+  // errors (ERR_SSL_CIPHER_OPERATION_FAILED); one retry absorbs them.
+  let install = await sandbox.exec(
     "npm install --omit=dev --no-audit --no-fund --loglevel=error",
     { cwd: CODEX_RUNNER_DIR, timeoutMs: 300_000 },
   );
+  if (install.exitCode !== 0) {
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    install = await sandbox.exec(
+      "npm install --omit=dev --no-audit --no-fund --loglevel=error",
+      { cwd: CODEX_RUNNER_DIR, timeoutMs: 300_000 },
+    );
+  }
   if (install.exitCode !== 0) {
     console.warn(
       `[codex-runner] npm install of @openai/codex-sdk failed (code ${install.exitCode}): ${install.stderr.slice(0, 500)}`,
