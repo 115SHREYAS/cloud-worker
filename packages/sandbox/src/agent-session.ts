@@ -1,7 +1,24 @@
 import type { SandboxManager } from "./sandbox";
-import type { AgentSessionConfig, AgentSessionResult, AgentProvider, AgentRunOptions } from "./types";
+import type {
+  AgentSessionConfig,
+  AgentSessionResult,
+  AgentProvider,
+  AgentRunOptions,
+  CommandExecutionResult,
+} from "./types";
+import type { CodexRunnerLine, CodexSdkUsageSummary } from "@cloud-worker/shared";
+import { parseCodexRunnerLine, mapCodexSdkEvent, summarizeCodexUsage } from "@cloud-worker/shared";
+import {
+  ensureCodexSdkRunner,
+  CODEX_RUNNER_SCRIPT,
+  CODEX_THREAD_FILE,
+} from "./codex-runner-setup";
+
+type CodexRunnerResultLine = Extract<CodexRunnerLine, { t: "result" }>;
 
 export class AgentSession {
+  private codexSdkReady: boolean | null = null;
+
   private constructor(
     public readonly sandbox: SandboxManager,
     public readonly config: AgentSessionConfig,
@@ -15,7 +32,10 @@ export class AgentSession {
   }
 
   /**
-   * Prepares credentials, ensures the CLI binary is available, and executes the agent prompt inside /workspace.
+   * Prepares credentials, ensures the harness is available, and executes the
+   * agent prompt inside /workspace. Codex runs through the official
+   * @openai/codex-sdk runner (structured events + real token usage) and falls
+   * back to the raw CLI when the SDK cannot be installed in the microVM.
    */
   public async run(prompt: string, runOptions?: AgentRunOptions): Promise<AgentSessionResult> {
     const provider: AgentProvider = this.config.provider ?? "codex";
@@ -27,8 +47,11 @@ export class AgentSession {
     // 1. Inject subscription authentication or API key
     await this.injectAuth(provider);
 
-    // 2. Ensure CLI binary exists in microVM
-    await this.ensureCli(provider);
+    // 2. Ensure a harness is available: SDK runner for codex, global CLI otherwise
+    const useCodexSdk = provider === "codex" ? await this.ensureCodexSdk() : false;
+    if (!useCodexSdk) {
+      await this.ensureCli(provider);
+    }
 
     // 3. Record baseline git commit & set up working branch if specified
     const startCommit = await this.getCurrentCommit(cwd);
@@ -44,6 +67,7 @@ export class AgentSession {
 
     let execResult: { exitCode: number | null; stdout: string; stderr: string };
     let refreshedAuthJson: string | undefined;
+    let sdkResultLine: CodexRunnerResultLine | null = null;
 
     // Handle abort signal if task cancellation is requested
     let abortListener: (() => void) | undefined;
@@ -56,42 +80,84 @@ export class AgentSession {
     }
 
     try {
-      // 5. Build execution command and environment
-      const { command, env } = this.buildRunCommand(provider, promptFilePath, isContinue);
+      let res: CommandExecutionResult;
+      let cliFallbackUsed = false;
 
-      // 6. Execute CLI with live stdout/stderr streaming
-      let res = await this.sandbox.exec(command, {
-        cwd,
-        env,
-        timeoutMs,
-        onStdout: this.config.onStdout,
-        onStderr: this.config.onStderr,
-      });
-
-      // Graceful fallback if resume failed because no previous session was found
-      if (
-        isContinue &&
-        res.exitCode !== 0 &&
-        (res.stderr.toLowerCase().includes("no session") ||
-          res.stderr.toLowerCase().includes("could not find session") ||
-          res.stderr.toLowerCase().includes("no previous"))
-      ) {
-        console.warn(`[agent-session] Session resume failed, starting fresh session: ${res.stderr.trim()}`);
-        const fresh = this.buildRunCommand(provider, promptFilePath, false);
-        res = await this.sandbox.exec(fresh.command, {
+      if (useCodexSdk) {
+        // 5a. Run through the in-VM Codex SDK runner with structured event relay
+        const sdk = this.buildCodexSdkCommand(promptFilePath, isContinue);
+        const lineHandler = this.createCodexRunnerLineHandler();
+        res = await this.sandbox.exec(sdk.command, {
           cwd,
-          env: fresh.env,
+          env: sdk.env,
+          timeoutMs,
+          onStdout: lineHandler.onStdout,
+          onStderr: this.config.onStderr,
+        });
+        await lineHandler.flush();
+        sdkResultLine = lineHandler.result;
+
+        // The runner could not use the SDK after all — fall back to the raw CLI
+        if (sdkResultLine?.code === 2) {
+          console.warn("[agent-session] Codex SDK runner unavailable, falling back to raw CLI execution");
+          await this.ensureCli(provider);
+          const cli = this.buildRunCommand(provider, promptFilePath, false);
+          res = await this.sandbox.exec(cli.command, {
+            cwd,
+            env: cli.env,
+            timeoutMs,
+            onStdout: this.config.onStdout,
+            onStderr: this.config.onStderr,
+          });
+          sdkResultLine = null;
+          cliFallbackUsed = true;
+        }
+
+        execResult = {
+          exitCode: res.exitCode,
+          stdout: res.stdout,
+          stderr:
+            !cliFallbackUsed && sdkResultLine?.error
+              ? `${res.stderr}\n[codex-sdk] ${sdkResultLine.error}`.trim()
+              : res.stderr,
+        };
+      } else {
+        // 5b. Raw CLI execution with stdout parsing (claude, or codex fallback)
+        const { command, env } = this.buildRunCommand(provider, promptFilePath, isContinue);
+
+        res = await this.sandbox.exec(command, {
+          cwd,
+          env,
           timeoutMs,
           onStdout: this.config.onStdout,
           onStderr: this.config.onStderr,
         });
-      }
 
-      execResult = {
-        exitCode: res.exitCode,
-        stdout: res.stdout,
-        stderr: res.stderr,
-      };
+        // Graceful fallback if resume failed because no previous session was found
+        if (
+          isContinue &&
+          res.exitCode !== 0 &&
+          (res.stderr.toLowerCase().includes("no session") ||
+            res.stderr.toLowerCase().includes("could not find session") ||
+            res.stderr.toLowerCase().includes("no previous"))
+        ) {
+          console.warn(`[agent-session] Session resume failed, starting fresh session: ${res.stderr.trim()}`);
+          const fresh = this.buildRunCommand(provider, promptFilePath, false);
+          res = await this.sandbox.exec(fresh.command, {
+            cwd,
+            env: fresh.env,
+            timeoutMs,
+            onStdout: this.config.onStdout,
+            onStderr: this.config.onStderr,
+          });
+        }
+
+        execResult = {
+          exitCode: res.exitCode,
+          stdout: res.stdout,
+          stderr: res.stderr,
+        };
+      }
     } finally {
       // Clean up abort listener
       if (this.config.signal && abortListener) {
@@ -112,6 +178,11 @@ export class AgentSession {
     // 7. Capture complete git diff (including commits made by the agent)
     const diff = await this.captureFullDiff(cwd, startCommit);
 
+    const sdkUsage: CodexSdkUsageSummary | undefined =
+      sdkResultLine && sdkResultLine.usage
+        ? summarizeCodexUsage(sdkResultLine.usage)
+        : undefined;
+
     return {
       exitCode: execResult.exitCode,
       stdout: execResult.stdout,
@@ -119,6 +190,115 @@ export class AgentSession {
       diff,
       durationMs: Date.now() - startTime,
       refreshedAuthJson,
+      sdkUsage,
+      finalMessage: sdkResultLine?.final,
+    };
+  }
+
+  private async ensureCodexSdk(): Promise<boolean> {
+    if (this.codexSdkReady === null) {
+      this.codexSdkReady = await ensureCodexSdkRunner(this.sandbox).catch((err) => {
+        console.warn("[agent-session] Codex SDK runner setup failed:", err);
+        return false;
+      });
+    }
+    return this.codexSdkReady;
+  }
+
+  /**
+   * Streams the SDK runner's stdout line by line: CW1 protocol lines are
+   * decoded into structured StreamEvents, while anything else (npm or node
+   * noise) is forwarded to the plain stdout callback so the raw terminal
+   * output stays honest without polluting it with protocol JSON.
+   */
+  private createCodexRunnerLineHandler() {
+    let buffer = "";
+    let result: CodexRunnerResultLine | null = null;
+
+    const handleLine = async (line: string): Promise<boolean> => {
+      const parsed = parseCodexRunnerLine(line);
+      if (!parsed) {
+        return false;
+      }
+      if (parsed.t === "ev") {
+        if (this.config.taskId && this.config.onEvent) {
+          const events = mapCodexSdkEvent(parsed.e, this.config.taskId);
+          if (events.length > 0) {
+            await this.config.onEvent(events);
+          }
+        }
+      } else if (parsed.t === "result") {
+        result = parsed;
+      }
+      // ready / thread / log lines are diagnostics; the worker emits its own status events
+      return true;
+    };
+
+    return {
+      get result(): CodexRunnerResultLine | null {
+        return result;
+      },
+      onStdout: async (chunk: string) => {
+        buffer += chunk;
+        let newlineIndex = buffer.indexOf("\n");
+        while (newlineIndex >= 0) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          const handled = await handleLine(line);
+          if (!handled && this.config.onStdout) {
+            await this.config.onStdout(`${line}\n`);
+          }
+          newlineIndex = buffer.indexOf("\n");
+        }
+      },
+      flush: async () => {
+        if (buffer) {
+          const remainder = buffer;
+          buffer = "";
+          const handled = await handleLine(remainder);
+          if (!handled && this.config.onStdout) {
+            await this.config.onStdout(remainder);
+          }
+        }
+      },
+    };
+  }
+
+  private buildCodexSdkCommand(
+    promptFilePath: string,
+    isContinue: boolean,
+  ): { command: string; env: Record<string, string> } {
+    const env: Record<string, string> = {
+      CI: "1",
+      NON_INTERACTIVE: "1",
+      CW_PROMPT_FILE: promptFilePath,
+      CW_THREAD_FILE: CODEX_THREAD_FILE,
+      CW_CONTINUE: isContinue ? "1" : "0",
+      CW_CWD: this.config.cwd ?? "/workspace",
+      CODEX_HOME: "/home/user/.codex",
+    };
+
+    if (this.config.apiKey) {
+      env.OPENAI_API_KEY = this.config.apiKey;
+    }
+    if (this.config.model && this.config.model !== "codex") {
+      env.CW_MODEL = this.config.model;
+    }
+    if (
+      this.config.reasoningEffort === "low" ||
+      this.config.reasoningEffort === "medium" ||
+      this.config.reasoningEffort === "high"
+    ) {
+      env.CW_EFFORT = this.config.reasoningEffort;
+    }
+    if (this.config.githubToken) {
+      env.GITHUB_TOKEN = this.config.githubToken;
+      env.GH_TOKEN = this.config.githubToken;
+    }
+
+    return {
+      command: `node "${CODEX_RUNNER_SCRIPT}"`,
+      env,
     };
   }
 

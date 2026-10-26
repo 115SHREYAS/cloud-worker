@@ -114,9 +114,10 @@ Never execute code-editing tasks via server-side direct LLM API calls. All code 
 
 ### 3. Session Continuation & Prompt Caching
 When `turn > 1`, always pass `isContinue: true` to `AgentSession.run`:
+- **OpenAI Codex (primary)**: Runs through the in-VM `@openai/codex-sdk` runner (`packages/sandbox/src/agent/codex-runner.mjs`). It persists the thread id to `/home/user/.cloud-worker/codex-thread-id` and resumes it via `codex.resumeThread(id)`, which replays prior context and hits OpenAI prompt prefix caching. It also emits structured events (reasoning, command_execution, file_change, agent_message) and real token usage on `turn.completed` — mapped to StreamEvents in `packages/shared/src/codex-sdk.ts`. If the SDK cannot be installed in the microVM, AgentSession falls back to the raw CLI.
+- **OpenAI Codex (fallback)**: Runs `codex exec --dangerously-bypass-approvals-and-sandbox` with stdout parsed by the worker.
 - **Claude Code**: Runs `claude -c -p "<prompt>"` to continue the conversation in `/workspace`. Automatically hits Anthropic prompt caching on prior context.
-- **OpenAI Codex**: Runs `codex exec resume --last -- "<prompt>"`.
-- **Fallback**: If resuming fails (e.g. session metadata corrupted), catch the error and fall back gracefully to a fresh invocation.
+- **Fallback**: If resuming fails (e.g. thread/rollout metadata corrupted), catch the error and fall back gracefully to a fresh invocation.
 
 ### 4. Git Operations & Commits
 - **Working Branch**: Preserve `task.workingBranch` across all turns. Never run `git checkout -B` if already on the working branch (check `git rev-parse --abbrev-ref HEAD`).

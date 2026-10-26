@@ -120,6 +120,28 @@ export const TurnStartEventSchema = z.object({
 
 export type TurnStartEvent = z.infer<typeof TurnStartEventSchema>;
 
+export const AgentMessageEventSchema = z.object({
+  type: z.literal("agent_message"),
+  taskId: z.string(),
+  message: z.string(),
+  timestamp: z.number(),
+});
+
+export type AgentMessageEvent = z.infer<typeof AgentMessageEventSchema>;
+
+export const TokenUsageUpdateEventSchema = z.object({
+  type: z.literal("usage"),
+  taskId: z.string(),
+  inputTokens: z.number().int().nonnegative(),
+  cachedInputTokens: z.number().int().nonnegative().optional(),
+  outputTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  model: z.string().optional(),
+  timestamp: z.number(),
+});
+
+export type TokenUsageUpdateEvent = z.infer<typeof TokenUsageUpdateEventSchema>;
+
 export const StreamEventSchema = z.discriminatedUnion("type", [
   LogChunkStdoutEventSchema,
   LogChunkStderrEventSchema,
@@ -133,6 +155,8 @@ export const StreamEventSchema = z.discriminatedUnion("type", [
   PingEventSchema,
   PromptQueuedEventSchema,
   TurnStartEventSchema,
+  AgentMessageEventSchema,
+  TokenUsageUpdateEventSchema,
 ]);
 
 export type StreamEvent = z.infer<typeof StreamEventSchema>;

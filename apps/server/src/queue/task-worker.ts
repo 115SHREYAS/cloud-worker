@@ -411,6 +411,42 @@ export class TaskWorker {
       return;
     }
 
+    // A worker already owns this task in this process; a duplicate delivery
+    // must not start a second execution alongside it.
+    if (this.activeControllers.has(taskId)) {
+      return;
+    }
+
+    // Guard against queue redelivery after a server restart: BullMQ re-enqueues
+    // jobs whose worker process died mid-flight (e.g. a task parked in the
+    // warm-input window). Re-executing would spend the owner's tokens again and
+    // fork the working branch history, so orphaned in-flight tasks fail instead.
+    if (task.status !== "pending") {
+      const interruptMsg =
+        "Task execution was interrupted by a server restart before it could finish. Start a new task to continue.";
+      await this.repo.updateTask(taskId, {
+        status: "failed",
+        error: interruptMsg,
+        completedAt: new Date().toISOString(),
+        warmExpiresAt: undefined,
+        queuedPrompt: undefined,
+      });
+      await this.emitAndLog({
+        type: "status",
+        taskId,
+        status: "failed",
+        message: interruptMsg,
+        timestamp: Date.now(),
+      });
+      await this.emitAndLog({
+        type: "error",
+        taskId,
+        message: interruptMsg,
+        timestamp: Date.now(),
+      });
+      return;
+    }
+
     const controller = new AbortController();
     this.activeControllers.set(taskId, controller);
     this.sessionStartTimes.set(taskId, Date.now());
@@ -515,6 +551,7 @@ export class TaskWorker {
       let turn = 1;
       let currentPrompt = task.prompt;
       let pullRequestUrl: string | undefined = task.pullRequestUrl;
+      let lastFinalMessage: string | undefined;
       let totalInputTokens = 0;
       let totalOutputTokens = 0;
       let totalCostUsd = 0;
@@ -570,6 +607,12 @@ export class TaskWorker {
           baseBranch: task.repo.branch,
           signal: controller.signal,
           isContinue: turn > 1,
+          taskId,
+          onEvent: async (events) => {
+            for (const event of events) {
+              await this.emitAndLog(event);
+            }
+          },
           onStdout: async (data) => {
             await this.emitAndLog({
               type: "stdout",
@@ -592,6 +635,9 @@ export class TaskWorker {
 
         const result = await session.run(currentPrompt, { isContinue: turn > 1 });
         await stdoutParser.end().catch(() => {});
+        if (result.finalMessage) {
+          lastFinalMessage = result.finalMessage;
+        }
 
         // 7. Persist refreshed subscription tokens under the task owner. Credentials
         // can only come from the owner's own record, so attribution is always safe.
@@ -605,8 +651,15 @@ export class TaskWorker {
           console.log(`[task-worker] Updated refreshed auth session for ${provider}`);
         }
 
-        // Accumulate token usage
-        const turnUsage = estimateTokenUsage(result.stdout, result.stderr, currentPrompt);
+        // Accumulate token usage. Codex SDK runs report real counts per turn;
+        // CLI runs (claude, codex fallback) keep the stdout-based estimate.
+        const turnUsage: TokenUsage = result.sdkUsage
+          ? {
+              inputTokens: result.sdkUsage.inputTokens,
+              outputTokens: result.sdkUsage.outputTokens,
+              totalTokens: result.sdkUsage.totalTokens,
+            }
+          : estimateTokenUsage(result.stdout, result.stderr, currentPrompt);
         totalInputTokens += turnUsage.inputTokens;
         totalOutputTokens += turnUsage.outputTokens;
         totalCostUsd = Math.round((totalCostUsd + (turnUsage.estimatedCostUsd ?? 0)) * 10000) / 10000;
@@ -885,7 +938,9 @@ export class TaskWorker {
         await this.emitAndLog({
           type: "done",
           taskId,
-          summary: `Task finished successfully across ${turn} turn${turn > 1 ? "s" : ""}`,
+          summary:
+            lastFinalMessage ||
+            `Task finished successfully across ${turn} turn${turn > 1 ? "s" : ""}`,
           pullRequestUrl,
           tokenUsage: {
             inputTokens: totalInputTokens,

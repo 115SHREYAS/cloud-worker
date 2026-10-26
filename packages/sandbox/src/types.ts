@@ -1,4 +1,4 @@
-import type { CommandExecutionResult, FileEntry } from "@cloud-worker/shared";
+import type { CommandExecutionResult, CodexSdkUsageSummary, FileEntry, StreamEvent } from "@cloud-worker/shared";
 
 export type AgentProvider = "codex" | "claude";
 
@@ -54,8 +54,12 @@ export interface AgentSessionConfig {
   timeoutMs?: number;
   signal?: AbortSignal;
   isContinue?: boolean;
+  /** Owning task id, used to stamp structured events emitted by SDK-backed runs. */
+  taskId?: string;
   onStdout?: (chunk: string) => void | Promise<void>;
   onStderr?: (chunk: string) => void | Promise<void>;
+  /** Receives structured StreamEvents mapped from Codex SDK thread events. */
+  onEvent?: (events: StreamEvent[]) => void | Promise<void>;
 }
 
 export interface AgentSessionResult {
@@ -65,6 +69,10 @@ export interface AgentSessionResult {
   diff: string;
   durationMs: number;
   refreshedAuthJson?: string;
+  /** Real token usage reported by the Codex SDK on the final turn (undefined for CLI runs). */
+  sdkUsage?: CodexSdkUsageSummary;
+  /** Final agent message text reported by the Codex SDK for the turn. */
+  finalMessage?: string;
 }
 
 export type { CommandExecutionResult, FileEntry };
