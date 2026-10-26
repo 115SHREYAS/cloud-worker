@@ -13,7 +13,6 @@ import {
   RefreshCw,
   Settings,
   X,
-  Compass,
   PanelLeftClose,
   ExternalLink,
   Archive,
@@ -30,7 +29,6 @@ interface ProjectHistoryPanelProps {
   onRefresh: () => void;
   isLoading?: boolean;
   currentUser?: UserPublicProfile | null;
-  onWalkthrough?: () => void;
   isOpen: boolean;
   onToggleOpen: () => void;
 }
@@ -104,7 +102,6 @@ export function ProjectHistoryPanel({
   onRefresh,
   isLoading,
   currentUser,
-  onWalkthrough,
   isOpen,
   onToggleOpen,
 }: ProjectHistoryPanelProps) {
@@ -648,21 +645,10 @@ export function ProjectHistoryPanel({
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
-            {onWalkthrough && (
-              <button
-                type="button"
-                onClick={onWalkthrough}
-                title="Revisit Walkthrough"
-                className="p-1.5 rounded-md text-zinc-500 hover:text-zinc-300 hover:bg-[#14151e] transition-colors cursor-pointer"
-              >
-                <Compass className="h-3.5 w-3.5" />
-              </button>
-            )}
-
             <button
               type="button"
               onClick={onOpenAuth}
-              title="Provider & API Credentials"
+              title="Settings"
               className="p-1.5 rounded-md text-zinc-500 hover:text-zinc-300 hover:bg-[#14151e] transition-colors cursor-pointer"
             >
               <Settings className="h-3.5 w-3.5" />

@@ -1,7 +1,7 @@
 "use client";
 
 import type { Task, TaskStatus, UserPublicProfile } from "@cloud-worker/shared";
-import { Plus, KeyRound, RefreshCw, Compass, LogOut, X } from "lucide-react";
+import { Plus, KeyRound, RefreshCw, LogOut, X } from "lucide-react";
 
 interface TaskSidebarProps {
   tasks: Task[];
@@ -12,7 +12,6 @@ interface TaskSidebarProps {
   onRefresh: () => void;
   isLoading?: boolean;
   currentUser?: UserPublicProfile | null;
-  onWalkthrough?: () => void;
   onLogout?: () => void;
   isOpen?: boolean;
   onClose?: () => void;
@@ -27,7 +26,6 @@ export function TaskSidebar({
   onRefresh,
   isLoading,
   currentUser,
-  onWalkthrough,
   onLogout,
   isOpen = false,
   onClose,
@@ -220,16 +218,6 @@ export function TaskSidebar({
             </div>
 
             <div className="flex items-center gap-1 shrink-0">
-              {onWalkthrough && (
-                <button
-                  type="button"
-                  onClick={onWalkthrough}
-                  title="Revisit walkthrough"
-                  className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors cursor-pointer"
-                >
-                  <Compass className="w-3.5 h-3.5" />
-                </button>
-              )}
               {onLogout && (
                 <button
                   type="button"

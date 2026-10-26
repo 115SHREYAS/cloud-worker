@@ -8,6 +8,7 @@ import {
   getCurrentUser,
   createTask,
   fetchGitHubRepositories,
+  logout,
 } from "../lib/api";
 import { ProjectHistoryPanel } from "../components/ProjectHistoryPanel";
 import {
@@ -16,7 +17,7 @@ import {
   type SelectedRepoRef,
 } from "../components/T3TaskComposer";
 import { TaskWorkspace } from "../components/TaskWorkspace";
-import { AuthSettingsModal } from "../components/AuthSettingsModal";
+import { SettingsModal } from "../components/SettingsModal";
 import { LandingWalkthrough } from "../components/LandingWalkthrough";
 import {
   Plus,
@@ -107,8 +108,16 @@ export default function DashboardPage() {
     };
   }, [router, loadTasks, loadRepositories]);
 
-  const handleWalkthrough = () => {
-    router.push("/onboarding");
+  const handleSignOut = async () => {
+    try {
+      await logout();
+    } catch (err) {
+      console.warn("Sign out request failed, clearing local session anyway:", err);
+    }
+    setCurrentUser(null);
+    setTasks([]);
+    setActiveTaskId(null);
+    router.push("/login");
   };
 
   const handleCreateTask = async (input: CreateTaskInput) => {
@@ -183,7 +192,6 @@ export default function DashboardPage() {
         onRefresh={loadTasks}
         isLoading={isLoading}
         currentUser={currentUser}
-        onWalkthrough={handleWalkthrough}
         isOpen={isHistoryPanelOpen}
         onToggleOpen={() => setIsHistoryPanelOpen(!isHistoryPanelOpen)}
       />
@@ -260,11 +268,11 @@ export default function DashboardPage() {
               </div>
             )}
 
-            {/* Credentials / Settings Modal Trigger */}
+            {/* Settings Modal Trigger */}
             <button
               type="button"
               onClick={() => setIsAuthOpen(true)}
-              title="Agent Credentials & Providers"
+              title="Settings"
               className="p-1.5 rounded-lg border border-[#222430] bg-[#101117] text-zinc-400 hover:text-zinc-200 hover:bg-[#181924] transition-colors cursor-pointer"
             >
               <Settings className="h-3.5 w-3.5" />
@@ -296,8 +304,8 @@ export default function DashboardPage() {
         </main>
       </div>
 
-      {/* Auth & Credential Settings Modal */}
-      <AuthSettingsModal
+      {/* Account & Inference Settings Modal */}
+      <SettingsModal
         isOpen={isAuthOpen}
         onClose={() => {
           setIsAuthOpen(false);
@@ -307,6 +315,8 @@ export default function DashboardPage() {
             })
             .catch(() => {});
         }}
+        currentUser={currentUser}
+        onSignOut={handleSignOut}
       />
     </div>
   );
