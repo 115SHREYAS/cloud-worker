@@ -1,4 +1,12 @@
-import type { CommandExecutionResult, CodexSdkUsageSummary, FileEntry, StreamEvent } from "@cloud-worker/shared";
+import type {
+  CommandExecutionResult,
+  CodexSdkUsageSummary,
+  ClaudeSdkUsageSummary,
+  FileEntry,
+  StreamEvent,
+} from "@cloud-worker/shared";
+
+export type AgentSdkUsageSummary = CodexSdkUsageSummary | ClaudeSdkUsageSummary;
 
 export type AgentProvider = "codex" | "claude";
 
@@ -70,7 +78,7 @@ export interface AgentSessionResult {
   durationMs: number;
   refreshedAuthJson?: string;
   /** Real token usage reported by the Codex SDK on the final turn (undefined for CLI runs). */
-  sdkUsage?: CodexSdkUsageSummary;
+  sdkUsage?: AgentSdkUsageSummary;
   /** Final agent message text reported by the Codex SDK for the turn. */
   finalMessage?: string;
 }

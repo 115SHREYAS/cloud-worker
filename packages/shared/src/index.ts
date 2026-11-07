@@ -5,3 +5,4 @@ export * from "./tools";
 export * from "./github";
 export * from "./user";
 export * from "./codex-sdk";
+export * from "./claude-sdk";
