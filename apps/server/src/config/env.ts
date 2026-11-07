@@ -43,6 +43,7 @@ export const EnvironmentSchema = z.object({
   GITHUB_CLIENT_SECRET: z.string().optional(),
   GITHUB_APP_SLUG: z.string().optional(),
   APP_URL: z.string().optional(),
+  CORS_ORIGIN: z.string().optional(),
   SESSION_SECRET: z.string().optional(),
   ENCRYPTION_KEY: z.string().optional(),
   CODEX_AUTH_JSON: z.string().optional(),
@@ -83,6 +84,9 @@ export function loadConfig(env = process.env): ServerEnvironment {
     }
     if (!config.ENCRYPTION_KEY || config.ENCRYPTION_KEY.length < 32) {
       invalidSecrets.push("ENCRYPTION_KEY (min 32 chars)");
+    }
+    if (!config.GITHUB_WEBHOOK_SECRET) {
+      invalidSecrets.push("GITHUB_WEBHOOK_SECRET");
     }
     if (invalidSecrets.length > 0) {
       throw new Error(

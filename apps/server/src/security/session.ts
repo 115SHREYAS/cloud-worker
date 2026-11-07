@@ -140,3 +140,25 @@ export function createLogoutCookie(secure = process.env.NODE_ENV === "production
   if (secure) flags.push("Secure");
   return flags.join("; ");
 }
+
+/**
+ * CSRF protection for the OAuth flow: the state is stored in a short-lived
+ * cookie at initiation and must round-trip through GitHub back to the callback.
+ */
+export function createOAuthStateCookie(state: string, maxAgeSec = 600): string {
+  const flags = [
+    `cw_oauth_state=${state}`,
+    "Path=/",
+    `Max-Age=${maxAgeSec}`,
+    "HttpOnly",
+    "SameSite=Lax",
+  ];
+  if (process.env.NODE_ENV === "production") flags.push("Secure");
+  return flags.join("; ");
+}
+
+export function createClearOAuthStateCookie(): string {
+  const flags = ["cw_oauth_state=", "Path=/", "Max-Age=0", "HttpOnly", "SameSite=Lax"];
+  if (process.env.NODE_ENV === "production") flags.push("Secure");
+  return flags.join("; ");
+}

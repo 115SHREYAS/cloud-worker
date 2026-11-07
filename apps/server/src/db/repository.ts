@@ -78,6 +78,9 @@ function mapRowToTask(row: TaskRow): TaskRecord {
     model: row.model,
     reasoningEffort: (row.reasoningEffort as ReasoningEffort) ?? undefined,
     workingBranch: row.workingBranch,
+    currentTurn: row.currentTurn ?? undefined,
+    queuedPrompt: row.queuedPrompt ?? undefined,
+    warmExpiresAt: row.warmExpiresAt?.toISOString(),
     sandboxId: row.sandboxId ?? undefined,
     pullRequestUrl: row.pullRequestUrl ?? undefined,
     diff: row.diff ?? undefined,
@@ -200,6 +203,17 @@ export class DrizzleTaskRepository implements TaskRepository {
     if (updates.error !== undefined) values.error = updates.error;
     if (updates.completedAt !== undefined) {
       values.completedAt = updates.completedAt ? new Date(updates.completedAt) : null;
+    }
+    // Warm-session fields: the worker sends explicit `undefined` to clear, so
+    // distinguish "field present" (`in`) from "field untouched" (omitted)
+    if ("currentTurn" in updates) {
+      values.currentTurn = updates.currentTurn ?? null;
+    }
+    if ("queuedPrompt" in updates) {
+      values.queuedPrompt = updates.queuedPrompt ?? null;
+    }
+    if ("warmExpiresAt" in updates) {
+      values.warmExpiresAt = updates.warmExpiresAt ? new Date(updates.warmExpiresAt) : null;
     }
     if (updates.tokenUsage) {
       values.tokenInputTokens = updates.tokenUsage.inputTokens;

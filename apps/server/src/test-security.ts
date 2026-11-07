@@ -5,6 +5,30 @@ import { SandboxScavenger } from "./queue/sandbox-cleaner.ts";
 import { MemoryTaskRepository, createTaskRepository } from "./db/repository.ts";
 import { syncGitHubInstallations } from "./github/sync.ts";
 import type { GitHubTokenManager } from "./github/token-manager.ts";
+
+function fakeSetupTokenManager(): GitHubTokenManager {
+  return {
+    isConfigured: () => true,
+    getAppOctokit: () => ({
+      rest: {
+        apps: {
+          getInstallation: async ({ installation_id }: { installation_id: number }) => ({
+            data: {
+              id: installation_id,
+              account:
+                installation_id === 322
+                  ? { login: "setup-tester", type: "User" }
+                  : { login: "victim", type: "User" },
+              repository_selection: "all",
+              created_at: "2026-01-01T00:00:00Z",
+              updated_at: "2026-01-01T00:00:00Z",
+            },
+          }),
+        },
+      },
+    }),
+  } as unknown as GitHubTokenManager;
+}
 import { MemoryEventBus } from "./events/event-bus.ts";
 import { DirectTaskQueue } from "./queue/task-queue.ts";
 import { TaskWorker } from "./queue/task-worker.ts";
@@ -63,6 +87,7 @@ describe("Phase 6 Security & Hardening Controls", () => {
       NODE_ENV: "production",
       E2B_API_KEY: "e2b_test_key",
       DATABASE_URL: "postgres://localhost:5432/test",
+      GITHUB_WEBHOOK_SECRET: "whsec_test_value",
     };
 
     // Neither secret set
@@ -78,7 +103,12 @@ describe("Phase 6 Security & Hardening Controls", () => {
       loadConfig({ ...prodBase, SESSION_SECRET: "short", ENCRYPTION_KEY: "k".repeat(32) }),
     ).toThrow(/SESSION_SECRET/);
 
-    // Valid 32+ character secrets boot cleanly
+    // Webhook secret missing is fatal: without it forged GitHub events are accepted
+    const noWebhookSecret = { ...prodBase, SESSION_SECRET: "s".repeat(48), ENCRYPTION_KEY: "k".repeat(48) };
+    delete (noWebhookSecret as { GITHUB_WEBHOOK_SECRET?: string }).GITHUB_WEBHOOK_SECRET;
+    expect(() => loadConfig(noWebhookSecret)).toThrow(/GITHUB_WEBHOOK_SECRET/);
+
+    // Valid secrets boot cleanly
     const ok = loadConfig({
       ...prodBase,
       SESSION_SECRET: "s".repeat(48),
@@ -363,6 +393,130 @@ describe("Phase 6 Security & Hardening Controls", () => {
     const aliceInstalls = await repo.listUserInstallations("usr_alice");
     expect(aliceInstalls.length).toBe(1);
     expect(aliceInstalls[0]?.id).toBe(501);
+  });
+
+  it("links a setup installation only when it verifiably belongs to the session user", async () => {
+    const repo = new MemoryTaskRepository();
+    const eventBus = new MemoryEventBus();
+    const worker = new TaskWorker(repo, eventBus);
+    const queue = new DirectTaskQueue(worker);
+    const tokenManager = fakeSetupTokenManager();
+
+    const server = createServer({ port: 0, repo, eventBus, queue, tokenManager });
+    const baseUrl = `http://localhost:${server.port}`;
+    const token = createSessionToken({
+      sub: "usr_setup_test",
+      username: "setup-tester",
+      email: "s@example.com",
+      avatarUrl: "",
+    });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    try {
+      // Someone else's installation: must not be linked to the session user
+      const victimRes = await fetch(`${baseUrl}/api/github/setup?installation_id=321`, {
+        headers,
+        redirect: "manual",
+      });
+      expect(victimRes.status).toBe(302);
+      expect(await repo.listUserInstallations("usr_setup_test")).toHaveLength(0);
+
+      // The user's own installation: linked
+      const ownRes = await fetch(`${baseUrl}/api/github/setup?installation_id=322`, {
+        headers,
+        redirect: "manual",
+      });
+      expect(ownRes.status).toBe(302);
+      const linked = await repo.listUserInstallations("usr_setup_test");
+      expect(linked).toHaveLength(1);
+      expect(linked[0]?.id).toBe(322);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("rejects the oauth callback when the state does not match the initiation cookie", async () => {
+    const repo = new MemoryTaskRepository();
+    const eventBus = new MemoryEventBus();
+    const worker = new TaskWorker(repo, eventBus);
+    const queue = new DirectTaskQueue(worker);
+    const server = createServer({ port: 0, repo, eventBus, queue });
+    const baseUrl = `http://localhost:${server.port}`;
+
+    const previousClientId = process.env.GITHUB_CLIENT_ID;
+    const previousClientSecret = process.env.GITHUB_CLIENT_SECRET;
+    process.env.GITHUB_CLIENT_ID = "test-client-id";
+    process.env.GITHUB_CLIENT_SECRET = "test-client-secret";
+
+    try {
+      // Initiation plants the state cookie
+      const initRes = await fetch(`${baseUrl}/api/auth/github`, { redirect: "manual" });
+      expect(initRes.status).toBe(302);
+      const stateCookie = (initRes.headers.getSetCookie?.() ?? []).find((c) =>
+        c.startsWith("cw_oauth_state="),
+      );
+      if (!stateCookie) throw new Error("initiation did not set the oauth state cookie");
+      const state = /cw_oauth_state=([^;]+)/.exec(stateCookie)?.[1] ?? "";
+
+      // Callback without the matching state is refused (login CSRF guard)
+      const badRes = await fetch(
+        `${baseUrl}/api/auth/callback/github?code=x&state=WRONGSTATE`,
+        { redirect: "manual" },
+      );
+      expect(badRes.status).toBe(302);
+      expect(badRes.headers.get("location")).toContain("error=oauth_state_mismatch");
+
+      // Matching state passes the guard and proceeds to the token exchange
+      // (which fails against the fake client id, but NOT with a state error)
+      const goodRes = await fetch(
+        `${baseUrl}/api/auth/callback/github?code=x&state=${state}`,
+        {
+          redirect: "manual",
+          headers: { cookie: `cw_oauth_state=${state}` },
+        },
+      );
+      const goodLocation = goodRes.headers.get("location") ?? "";
+      expect(goodLocation).not.toContain("oauth_state_mismatch");
+    } finally {
+      if (previousClientId === undefined) delete process.env.GITHUB_CLIENT_ID;
+      else process.env.GITHUB_CLIENT_ID = previousClientId;
+      if (previousClientSecret === undefined) delete process.env.GITHUB_CLIENT_SECRET;
+      else process.env.GITHUB_CLIENT_SECRET = previousClientSecret;
+      server.stop();
+    }
+  });
+
+  it("reflects only allowlisted origins in CORS headers", async () => {
+    const repo = new MemoryTaskRepository();
+    const eventBus = new MemoryEventBus();
+    const worker = new TaskWorker(repo, eventBus);
+    const queue = new DirectTaskQueue(worker);
+    const server = createServer({ port: 0, repo, eventBus, queue });
+    const baseUrl = `http://localhost:${server.port}`;
+
+    const previousAppUrl = process.env.APP_URL;
+    process.env.APP_URL = "https://cloudworker.example.dev";
+
+    try {
+      // Allowlisted origin is reflected
+      const allowed = await fetch(`${baseUrl}/health`, {
+        headers: { origin: "https://cloudworker.example.dev" },
+      });
+      expect(allowed.headers.get("access-control-allow-origin")).toBe("https://cloudworker.example.dev");
+
+      // Unknown origin gets no ACAO: browsers block the read
+      const denied = await fetch(`${baseUrl}/health`, {
+        headers: { origin: "https://evil.example" },
+      });
+      expect(denied.headers.get("access-control-allow-origin")).toBeNull();
+
+      // Same-origin (no Origin header) works without CORS headers
+      const direct = await fetch(`${baseUrl}/health`);
+      expect(direct.status).toBe(200);
+    } finally {
+      process.env.APP_URL = previousAppUrl;
+      server.stop();
+    }
   });
 
   it("destroys sandbox instance immediately on cancel", () => {
