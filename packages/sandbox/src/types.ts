@@ -44,7 +44,6 @@ export interface WorkspaceInitResult {
   };
 }
 
-
 export interface AgentRunOptions {
   isContinue?: boolean;
 }
@@ -55,6 +54,8 @@ export interface AgentSessionConfig {
   reasoningEffort?: "none" | "low" | "medium" | "high";
   authJson?: string;
   apiKey?: string;
+  anthropicBaseUrl?: string;
+  anthropicAuthToken?: string;
   githubToken?: string;
   workingBranch?: string;
   baseBranch?: string;

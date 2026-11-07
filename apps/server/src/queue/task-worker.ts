@@ -603,6 +603,8 @@ export class TaskWorker {
           reasoningEffort: task.reasoningEffort,
           authJson,
           apiKey,
+          anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL,
+          anthropicAuthToken: process.env.ANTHROPIC_AUTH_TOKEN,
           workingBranch: task.workingBranch,
           baseBranch: task.repo.branch,
           signal: controller.signal,

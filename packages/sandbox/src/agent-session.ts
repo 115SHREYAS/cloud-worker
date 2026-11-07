@@ -454,6 +454,17 @@ export class AgentSession {
       env.ANTHROPIC_API_KEY = this.config.apiKey;
     }
 
+    if (this.config.anthropicBaseUrl || process.env.ANTHROPIC_BASE_URL) {
+      env.ANTHROPIC_BASE_URL = this.config.anthropicBaseUrl || process.env.ANTHROPIC_BASE_URL!;
+    }
+
+    if (this.config.anthropicAuthToken || process.env.ANTHROPIC_AUTH_TOKEN) {
+      env.ANTHROPIC_AUTH_TOKEN = this.config.anthropicAuthToken || process.env.ANTHROPIC_AUTH_TOKEN!;
+      if (!env.ANTHROPIC_API_KEY) {
+        env.ANTHROPIC_API_KEY = "";
+      }
+    }
+
     if (this.config.authJson) {
       const trimmed = this.config.authJson.trim();
       if (!trimmed.startsWith("{")) {
@@ -604,6 +615,17 @@ export class AgentSession {
         }
       } else if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
         env.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      }
+
+      if (this.config.anthropicBaseUrl || process.env.ANTHROPIC_BASE_URL) {
+        env.ANTHROPIC_BASE_URL = this.config.anthropicBaseUrl || process.env.ANTHROPIC_BASE_URL!;
+      }
+
+      if (this.config.anthropicAuthToken || process.env.ANTHROPIC_AUTH_TOKEN) {
+        env.ANTHROPIC_AUTH_TOKEN = this.config.anthropicAuthToken || process.env.ANTHROPIC_AUTH_TOKEN!;
+        if (!env.ANTHROPIC_API_KEY) {
+          env.ANTHROPIC_API_KEY = "";
+        }
       }
     }
 
