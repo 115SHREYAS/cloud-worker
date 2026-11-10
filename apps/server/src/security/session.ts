@@ -107,7 +107,13 @@ export function parseCookies(cookieHeader?: string | null): Record<string, strin
   for (const pair of cookieHeader.split(";")) {
     const [name, ...val] = pair.trim().split("=");
     if (name) {
-      cookies[name] = decodeURIComponent(val.join("="));
+      const trimmedName = name.trim();
+      const rawVal = val.join("=").trim();
+      try {
+        cookies[trimmedName] = decodeURIComponent(rawVal);
+      } catch {
+        cookies[trimmedName] = rawVal;
+      }
     }
   }
   return cookies;

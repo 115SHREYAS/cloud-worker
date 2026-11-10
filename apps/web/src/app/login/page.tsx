@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { getCurrentUser } from "../../lib/api";
 import { Loader2 } from "lucide-react";
@@ -18,12 +18,32 @@ function GitHubIcon({ className = "w-4 h-4" }: { className?: string }) {
   );
 }
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const errorParam = searchParams.get("error");
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (errorParam) {
+      if (errorParam === "oauth_state_mismatch") {
+        setErrorMessage("OAuth session verification failed. Please try signing in again.");
+      } else if (errorParam === "missing_oauth_code") {
+        setErrorMessage("GitHub authorization was cancelled or failed to return a code.");
+      } else if (errorParam === "bad_verification_code") {
+        setErrorMessage("GitHub authorization code expired. Please sign in again.");
+      } else if (errorParam === "oauth_failed") {
+        setErrorMessage("GitHub sign-in could not be completed. Please try again.");
+      } else if (errorParam === "oauth_internal_error") {
+        setErrorMessage("A server error occurred during GitHub login. Please try again.");
+      } else {
+        setErrorMessage(`Authentication error: ${errorParam}`);
+      }
+    }
+  }, [errorParam]);
 
   useEffect(() => {
     let ignore = false;
@@ -96,7 +116,10 @@ export default function LoginPage() {
             <div className="flex rounded-lg border border-zinc-800 bg-zinc-950 p-1">
               <button
                 type="button"
-                onClick={() => setMode("signin")}
+                onClick={() => {
+                  setMode("signin");
+                  setErrorMessage(null);
+                }}
                 className={`flex-1 rounded-md py-1.5 text-xs font-medium transition-colors cursor-pointer ${
                   mode === "signin"
                     ? "bg-zinc-800 text-zinc-100 shadow-xs"
@@ -107,7 +130,10 @@ export default function LoginPage() {
               </button>
               <button
                 type="button"
-                onClick={() => setMode("signup")}
+                onClick={() => {
+                  setMode("signup");
+                  setErrorMessage(null);
+                }}
                 className={`flex-1 rounded-md py-1.5 text-xs font-medium transition-colors cursor-pointer ${
                   mode === "signup"
                     ? "bg-zinc-800 text-zinc-100 shadow-xs"
@@ -160,7 +186,10 @@ export default function LoginPage() {
                   New to Cloud Worker?{" "}
                   <button
                     type="button"
-                    onClick={() => setMode("signup")}
+                    onClick={() => {
+                      setMode("signup");
+                      setErrorMessage(null);
+                    }}
                     className="text-blue-400 hover:underline cursor-pointer font-medium"
                   >
                     Create an account
@@ -171,7 +200,10 @@ export default function LoginPage() {
                   Already have an account?{" "}
                   <button
                     type="button"
-                    onClick={() => setMode("signin")}
+                    onClick={() => {
+                      setMode("signin");
+                      setErrorMessage(null);
+                    }}
                     className="text-blue-400 hover:underline cursor-pointer font-medium"
                   >
                     Sign in
@@ -195,5 +227,22 @@ export default function LoginPage() {
         Cloud Worker
       </footer>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div suppressHydrationWarning className="flex min-h-screen w-full items-center justify-center bg-black text-zinc-100">
+          <div suppressHydrationWarning className="flex items-center gap-3 text-sm text-zinc-400">
+            <Loader2 className="h-4 w-4 animate-spin text-blue-400" />
+            <span>Loading...</span>
+          </div>
+        </div>
+      }
+    >
+      <LoginForm />
+    </Suspense>
   );
 }
