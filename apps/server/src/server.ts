@@ -149,11 +149,6 @@ export function createServer(options: ServerOptions) {
         // List tasks (session user's tasks only)
         if (path === "/api/tasks" && method === "GET") {
           if (!session) return unauthorized(CORS_HEADERS);
-          try {
-            await repo.claimLegacyTasks(session.sub, session.username);
-          } catch {
-            // Ignore legacy claim failures
-          }
           const limitParam = url.searchParams.get("limit");
           const parsedLimit = limitParam ? parseInt(limitParam, 10) : 50;
           const limit = Number.isNaN(parsedLimit) ? 50 : Math.min(Math.max(1, parsedLimit), 100);
@@ -587,11 +582,6 @@ export function createServer(options: ServerOptions) {
               if (inst.accountLogin.toLowerCase() === ghUser.login.toLowerCase()) {
                 await repo.linkUserInstallation(user.id, inst.id);
               }
-            }
-            try {
-              await repo.claimLegacyTasks(user.id, ghUser.login);
-            } catch {
-              // Ignore legacy task claim failures
             }
 
             const sessionToken = createSessionToken({
