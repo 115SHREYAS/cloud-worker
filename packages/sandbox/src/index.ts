@@ -3,3 +3,4 @@ export * from "./types";
 export * from "./init-workspace";
 export * from "./agent-session";
 export * from "./codex-runner-setup";
+export * from "./claude-runner-setup";

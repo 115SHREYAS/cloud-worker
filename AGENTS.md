@@ -116,7 +116,8 @@ Never execute code-editing tasks via server-side direct LLM API calls. All code 
 When `turn > 1`, always pass `isContinue: true` to `AgentSession.run`:
 - **OpenAI Codex (primary)**: Runs through the in-VM `@openai/codex-sdk` runner (`packages/sandbox/src/agent/codex-runner.mjs`). It persists the thread id to `/home/user/.cloud-worker/codex-thread-id` and resumes it via `codex.resumeThread(id)`, which replays prior context and hits OpenAI prompt prefix caching. It also emits structured events (reasoning, command_execution, file_change, agent_message) and real token usage on `turn.completed` — mapped to StreamEvents in `packages/shared/src/codex-sdk.ts`. If the SDK cannot be installed in the microVM, AgentSession falls back to the raw CLI.
 - **OpenAI Codex (fallback)**: Runs `codex exec --dangerously-bypass-approvals-and-sandbox` with stdout parsed by the worker.
-- **Claude Code**: Runs `claude -c -p "<prompt>"` to continue the conversation in `/workspace`. Automatically hits Anthropic prompt caching on prior context.
+- **Claude Code (primary)**: Runs through the in-VM `@anthropic-ai/claude-agent-sdk` runner (`packages/sandbox/src/agent/claude-runner.mjs`). It persists the session id to `/home/user/.cloud-worker/claude-session-id` and resumes it via `options.resume`, preserving context and triggering Anthropic prompt prefix caching. It also emits structured events (thinking, tool_use, tool_result, agent_message) and real token usage on completion — mapped to StreamEvents in `packages/shared/src/claude-sdk.ts`. If the SDK cannot be installed in the microVM, AgentSession falls back to the raw CLI.
+- **Claude Code (fallback)**: Runs `claude -c -p "<prompt>" --dangerously-skip-permissions` with stdout parsed by the worker.
 - **Fallback**: If resuming fails (e.g. thread/rollout metadata corrupted), catch the error and fall back gracefully to a fresh invocation.
 
 ### 4. Git Operations & Commits

@@ -4,20 +4,40 @@ import type {
   AgentSessionResult,
   AgentProvider,
   AgentRunOptions,
+  AgentSdkUsageSummary,
   CommandExecutionResult,
 } from "./types";
-import type { CodexRunnerLine, CodexSdkUsageSummary } from "@cloud-worker/shared";
-import { parseCodexRunnerLine, mapCodexSdkEvent, summarizeCodexUsage } from "@cloud-worker/shared";
+import type {
+  CodexRunnerLine,
+  CodexSdkUsageSummary,
+  ClaudeRunnerLine,
+  ClaudeSdkUsageSummary,
+} from "@cloud-worker/shared";
+import {
+  parseCodexRunnerLine,
+  mapCodexSdkEvent,
+  summarizeCodexUsage,
+  parseClaudeRunnerLine,
+  mapClaudeSdkEvent,
+  summarizeClaudeUsage,
+} from "@cloud-worker/shared";
 import {
   ensureCodexSdkRunner,
   CODEX_RUNNER_SCRIPT,
   CODEX_THREAD_FILE,
 } from "./codex-runner-setup";
+import {
+  ensureClaudeSdkRunner,
+  CLAUDE_RUNNER_SCRIPT,
+  CLAUDE_SESSION_FILE,
+} from "./claude-runner-setup";
 
 type CodexRunnerResultLine = Extract<CodexRunnerLine, { t: "result" }>;
+type ClaudeRunnerResultLine = Extract<ClaudeRunnerLine, { t: "result" }>;
 
 export class AgentSession {
   private codexSdkReady: boolean | null = null;
+  private claudeSdkReady: boolean | null = null;
 
   private constructor(
     public readonly sandbox: SandboxManager,
@@ -33,9 +53,9 @@ export class AgentSession {
 
   /**
    * Prepares credentials, ensures the harness is available, and executes the
-   * agent prompt inside /workspace. Codex runs through the official
-   * @openai/codex-sdk runner (structured events + real token usage) and falls
-   * back to the raw CLI when the SDK cannot be installed in the microVM.
+   * agent prompt inside /workspace. Both Codex and Claude run through their
+   * official in-VM SDK runners (structured events + real token usage) and fall
+   * back to raw CLI execution when the SDK cannot be installed in the microVM.
    */
   public async run(prompt: string, runOptions?: AgentRunOptions): Promise<AgentSessionResult> {
     const provider: AgentProvider = this.config.provider ?? "codex";
@@ -47,9 +67,10 @@ export class AgentSession {
     // 1. Inject subscription authentication or API key
     await this.injectAuth(provider);
 
-    // 2. Ensure a harness is available: SDK runner for codex, global CLI otherwise
+    // 2. Ensure a harness is available: SDK runner for codex/claude, global CLI otherwise
     const useCodexSdk = provider === "codex" ? await this.ensureCodexSdk() : false;
-    if (!useCodexSdk) {
+    const useClaudeSdk = provider === "claude" ? await this.ensureClaudeSdk() : false;
+    if (!useCodexSdk && !useClaudeSdk) {
       await this.ensureCli(provider);
     }
 
@@ -67,7 +88,8 @@ export class AgentSession {
 
     let execResult: { exitCode: number | null; stdout: string; stderr: string };
     let refreshedAuthJson: string | undefined;
-    let sdkResultLine: CodexRunnerResultLine | null = null;
+    let codexResultLine: CodexRunnerResultLine | null = null;
+    let claudeResultLine: ClaudeRunnerResultLine | null = null;
 
     // Handle abort signal if task cancellation is requested
     let abortListener: (() => void) | undefined;
@@ -95,10 +117,10 @@ export class AgentSession {
           onStderr: this.config.onStderr,
         });
         await lineHandler.flush();
-        sdkResultLine = lineHandler.result;
+        codexResultLine = lineHandler.result;
 
         // The runner could not use the SDK after all — fall back to the raw CLI
-        if (sdkResultLine?.code === 2) {
+        if (codexResultLine?.code === 2) {
           console.warn("[agent-session] Codex SDK runner unavailable, falling back to raw CLI execution");
           await this.ensureCli(provider);
           const cli = this.buildRunCommand(provider, promptFilePath, false);
@@ -109,7 +131,7 @@ export class AgentSession {
             onStdout: this.config.onStdout,
             onStderr: this.config.onStderr,
           });
-          sdkResultLine = null;
+          codexResultLine = null;
           cliFallbackUsed = true;
         }
 
@@ -117,12 +139,50 @@ export class AgentSession {
           exitCode: res.exitCode,
           stdout: res.stdout,
           stderr:
-            !cliFallbackUsed && sdkResultLine?.error
-              ? `${res.stderr}\n[codex-sdk] ${sdkResultLine.error}`.trim()
+            !cliFallbackUsed && codexResultLine?.error
+              ? `${res.stderr}\n[codex-sdk] ${codexResultLine.error}`.trim()
+              : res.stderr,
+        };
+      } else if (useClaudeSdk) {
+        // 5b. Run through the in-VM Claude Agent SDK runner with structured event relay
+        const sdk = this.buildClaudeSdkCommand(promptFilePath, isContinue);
+        const lineHandler = this.createClaudeRunnerLineHandler();
+        res = await this.sandbox.exec(sdk.command, {
+          cwd,
+          env: sdk.env,
+          timeoutMs,
+          onStdout: lineHandler.onStdout,
+          onStderr: this.config.onStderr,
+        });
+        await lineHandler.flush();
+        claudeResultLine = lineHandler.result;
+
+        // The runner could not use the SDK after all — fall back to the raw CLI
+        if (claudeResultLine?.code === 2) {
+          console.warn("[agent-session] Claude Agent SDK runner unavailable, falling back to raw CLI execution");
+          await this.ensureCli(provider);
+          const cli = this.buildRunCommand(provider, promptFilePath, false);
+          res = await this.sandbox.exec(cli.command, {
+            cwd,
+            env: cli.env,
+            timeoutMs,
+            onStdout: this.config.onStdout,
+            onStderr: this.config.onStderr,
+          });
+          claudeResultLine = null;
+          cliFallbackUsed = true;
+        }
+
+        execResult = {
+          exitCode: res.exitCode,
+          stdout: res.stdout,
+          stderr:
+            !cliFallbackUsed && claudeResultLine?.error
+              ? `${res.stderr}\n[claude-sdk] ${claudeResultLine.error}`.trim()
               : res.stderr,
         };
       } else {
-        // 5b. Raw CLI execution with stdout parsing (claude, or codex fallback)
+        // 5c. Raw CLI execution with stdout parsing (codex or claude fallback)
         const { command, env } = this.buildRunCommand(provider, promptFilePath, isContinue);
 
         res = await this.sandbox.exec(command, {
@@ -178,10 +238,21 @@ export class AgentSession {
     // 7. Capture complete git diff (including commits made by the agent)
     const diff = await this.captureFullDiff(cwd, startCommit);
 
-    const sdkUsage: CodexSdkUsageSummary | undefined =
-      sdkResultLine && sdkResultLine.usage
-        ? summarizeCodexUsage(sdkResultLine.usage)
-        : undefined;
+    let sdkUsage: AgentSdkUsageSummary | undefined;
+    if (codexResultLine && codexResultLine.usage) {
+      sdkUsage = summarizeCodexUsage(codexResultLine.usage);
+    } else if (claudeResultLine) {
+      if (claudeResultLine.modelUsage && Object.keys(claudeResultLine.modelUsage).length > 0) {
+        const primary = Object.values(claudeResultLine.modelUsage)[0];
+        if (primary) {
+          sdkUsage = summarizeClaudeUsage(primary, claudeResultLine.totalCostUsd);
+        }
+      } else if (claudeResultLine.usage) {
+        sdkUsage = summarizeClaudeUsage(claudeResultLine.usage, claudeResultLine.totalCostUsd);
+      }
+    }
+
+    const finalMessage = codexResultLine?.final || claudeResultLine?.final;
 
     return {
       exitCode: execResult.exitCode,
@@ -191,7 +262,7 @@ export class AgentSession {
       durationMs: Date.now() - startTime,
       refreshedAuthJson,
       sdkUsage,
-      finalMessage: sdkResultLine?.final,
+      finalMessage,
     };
   }
 
@@ -205,11 +276,19 @@ export class AgentSession {
     return this.codexSdkReady;
   }
 
+  private async ensureClaudeSdk(): Promise<boolean> {
+    if (this.claudeSdkReady === null) {
+      this.claudeSdkReady = await ensureClaudeSdkRunner(this.sandbox).catch((err) => {
+        console.warn("[agent-session] Claude Agent SDK runner setup failed:", err);
+        return false;
+      });
+    }
+    return this.claudeSdkReady;
+  }
+
   /**
-   * Streams the SDK runner's stdout line by line: CW1 protocol lines are
-   * decoded into structured StreamEvents, while anything else (npm or node
-   * noise) is forwarded to the plain stdout callback so the raw terminal
-   * output stays honest without polluting it with protocol JSON.
+   * Streams the Codex SDK runner's stdout line by line: CW1 protocol lines are
+   * decoded into structured StreamEvents, while anything else is forwarded to stdout.
    */
   private createCodexRunnerLineHandler() {
     let buffer = "";
@@ -230,12 +309,67 @@ export class AgentSession {
       } else if (parsed.t === "result") {
         result = parsed;
       }
-      // ready / thread / log lines are diagnostics; the worker emits its own status events
       return true;
     };
 
     return {
       get result(): CodexRunnerResultLine | null {
+        return result;
+      },
+      onStdout: async (chunk: string) => {
+        buffer += chunk;
+        let newlineIndex = buffer.indexOf("\n");
+        while (newlineIndex >= 0) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          const handled = await handleLine(line);
+          if (!handled && this.config.onStdout) {
+            await this.config.onStdout(`${line}\n`);
+          }
+          newlineIndex = buffer.indexOf("\n");
+        }
+      },
+      flush: async () => {
+        if (buffer) {
+          const remainder = buffer;
+          buffer = "";
+          const handled = await handleLine(remainder);
+          if (!handled && this.config.onStdout) {
+            await this.config.onStdout(remainder);
+          }
+        }
+      },
+    };
+  }
+
+  /**
+   * Streams the Claude Agent SDK runner's stdout line by line: CW1 protocol lines
+   * are decoded into structured StreamEvents, while anything else is forwarded to stdout.
+   */
+  private createClaudeRunnerLineHandler() {
+    let buffer = "";
+    let result: ClaudeRunnerResultLine | null = null;
+
+    const handleLine = async (line: string): Promise<boolean> => {
+      const parsed = parseClaudeRunnerLine(line);
+      if (!parsed) {
+        return false;
+      }
+      if (parsed.t === "ev") {
+        if (this.config.taskId && this.config.onEvent) {
+          const events = mapClaudeSdkEvent(parsed.e, this.config.taskId);
+          if (events.length > 0) {
+            await this.config.onEvent(events);
+          }
+        }
+      } else if (parsed.t === "result") {
+        result = parsed;
+      }
+      return true;
+    };
+
+    return {
+      get result(): ClaudeRunnerResultLine | null {
         return result;
       },
       onStdout: async (chunk: string) => {
@@ -298,6 +432,67 @@ export class AgentSession {
 
     return {
       command: `node "${CODEX_RUNNER_SCRIPT}"`,
+      env,
+    };
+  }
+
+  private buildClaudeSdkCommand(
+    promptFilePath: string,
+    isContinue: boolean,
+  ): { command: string; env: Record<string, string> } {
+    const env: Record<string, string> = {
+      CI: "1",
+      NON_INTERACTIVE: "1",
+      CW_PROMPT_FILE: promptFilePath,
+      CW_SESSION_FILE: CLAUDE_SESSION_FILE,
+      CW_CONTINUE: isContinue ? "1" : "0",
+      CW_CWD: this.config.cwd ?? "/workspace",
+      HOME: "/home/user",
+    };
+
+    if (this.config.apiKey) {
+      env.ANTHROPIC_API_KEY = this.config.apiKey;
+    }
+
+    if (this.config.anthropicBaseUrl || process.env.ANTHROPIC_BASE_URL) {
+      env.ANTHROPIC_BASE_URL = this.config.anthropicBaseUrl || process.env.ANTHROPIC_BASE_URL!;
+    }
+
+    if (this.config.anthropicAuthToken || process.env.ANTHROPIC_AUTH_TOKEN) {
+      env.ANTHROPIC_AUTH_TOKEN = this.config.anthropicAuthToken || process.env.ANTHROPIC_AUTH_TOKEN!;
+      if (!env.ANTHROPIC_API_KEY) {
+        env.ANTHROPIC_API_KEY = "";
+      }
+    }
+
+    if (this.config.authJson) {
+      const trimmed = this.config.authJson.trim();
+      if (!trimmed.startsWith("{")) {
+        env.CLAUDE_CODE_OAUTH_TOKEN = trimmed.replace(/^CLAUDE_CODE_OAUTH_TOKEN\s*=\s*/i, "").trim();
+      }
+    } else if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+      env.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    }
+
+    if (this.config.model && this.config.model !== "claude" && this.config.model !== "codex") {
+      env.CW_MODEL = this.config.model;
+    }
+
+    if (
+      this.config.reasoningEffort === "low" ||
+      this.config.reasoningEffort === "medium" ||
+      this.config.reasoningEffort === "high"
+    ) {
+      env.CW_EFFORT = this.config.reasoningEffort;
+    }
+
+    if (this.config.githubToken) {
+      env.GITHUB_TOKEN = this.config.githubToken;
+      env.GH_TOKEN = this.config.githubToken;
+    }
+
+    return {
+      command: `node "${CLAUDE_RUNNER_SCRIPT}"`,
       env,
     };
   }
@@ -420,6 +615,17 @@ export class AgentSession {
         }
       } else if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
         env.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      }
+
+      if (this.config.anthropicBaseUrl || process.env.ANTHROPIC_BASE_URL) {
+        env.ANTHROPIC_BASE_URL = this.config.anthropicBaseUrl || process.env.ANTHROPIC_BASE_URL!;
+      }
+
+      if (this.config.anthropicAuthToken || process.env.ANTHROPIC_AUTH_TOKEN) {
+        env.ANTHROPIC_AUTH_TOKEN = this.config.anthropicAuthToken || process.env.ANTHROPIC_AUTH_TOKEN!;
+        if (!env.ANTHROPIC_API_KEY) {
+          env.ANTHROPIC_API_KEY = "";
+        }
       }
     }
 

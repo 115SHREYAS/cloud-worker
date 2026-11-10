@@ -603,6 +603,8 @@ export class TaskWorker {
           reasoningEffort: task.reasoningEffort,
           authJson,
           apiKey,
+          anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL,
+          anthropicAuthToken: process.env.ANTHROPIC_AUTH_TOKEN,
           workingBranch: task.workingBranch,
           baseBranch: task.repo.branch,
           signal: controller.signal,
@@ -651,8 +653,8 @@ export class TaskWorker {
           console.log(`[task-worker] Updated refreshed auth session for ${provider}`);
         }
 
-        // Accumulate token usage. Codex SDK runs report real counts per turn;
-        // CLI runs (claude, codex fallback) keep the stdout-based estimate.
+        // Accumulate token usage. In-VM SDK runs (Codex and Claude) report real counts per turn;
+        // CLI fallback runs keep the stdout-based estimate.
         const turnUsage: TokenUsage = result.sdkUsage
           ? {
               inputTokens: result.sdkUsage.inputTokens,

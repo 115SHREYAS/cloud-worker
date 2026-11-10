@@ -50,6 +50,8 @@ export const EnvironmentSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   CLAUDE_AUTH_JSON: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_BASE_URL: z.string().optional(),
+  ANTHROPIC_AUTH_TOKEN: z.string().optional(),
   MAX_TASK_DURATION_MS: z.coerce.number().int().positive().default(900_000), // 15 minutes
   MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(50),
 });
