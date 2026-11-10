@@ -514,7 +514,8 @@ describe("Phase 6 Security & Hardening Controls", () => {
       const direct = await fetch(`${baseUrl}/health`);
       expect(direct.status).toBe(200);
     } finally {
-      process.env.APP_URL = previousAppUrl;
+      if (previousAppUrl === undefined) delete process.env.APP_URL;
+      else process.env.APP_URL = previousAppUrl;
       server.stop();
     }
   });

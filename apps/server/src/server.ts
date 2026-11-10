@@ -62,6 +62,22 @@ function buildCorsHeaders(origin: string | null): Record<string, string> {
   return headers;
 }
 
+function resolveClientOrigin(req: Request, url: URL): string {
+  const rawAppUrl = process.env.APP_URL?.trim();
+  if (rawAppUrl && rawAppUrl !== "undefined") {
+    return rawAppUrl.replace(/\/+$/, "");
+  }
+  const forwardedHost = req.headers.get("x-forwarded-host");
+  const forwardedProto = req.headers.get("x-forwarded-proto") || "http";
+  if (forwardedHost) {
+    return `${forwardedProto}://${forwardedHost}`;
+  }
+  if (url.port === "3001") {
+    return "http://localhost:3000";
+  }
+  return url.origin;
+}
+
 function getCurrentUserSession(req: Request): SessionPayload | null {
   const authHeader = req.headers.get("authorization");
   if (authHeader?.startsWith("Bearer ")) {
@@ -459,25 +475,16 @@ export function createServer(options: ServerOptions) {
           const state = randomBytes(16).toString("hex");
           // Deterministic public origin when APP_URL is set (e.g. https://app.yourdomain.com);
           // falls back to proxy headers / request origin for local development
-          const forwardedHost = req.headers.get("x-forwarded-host");
-          const forwardedProto = req.headers.get("x-forwarded-proto") || "http";
-          const clientOrigin =
-            process.env.APP_URL?.replace(/\/+$/, "") ||
-            (forwardedHost
-              ? `${forwardedProto}://${forwardedHost}`
-              : url.port === "3001"
-                ? "http://localhost:3000"
-                : url.origin);
+          const clientOrigin = resolveClientOrigin(req, url);
           const redirectUri = `${clientOrigin}/api/auth/callback/github`;
           const githubAuthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=read:user,user:email&state=${state}`;
 
+          const responseHeaders = new Headers(CORS_HEADERS);
+          responseHeaders.set("Location", githubAuthUrl);
+          responseHeaders.append("Set-Cookie", createOAuthStateCookie(state));
           return new Response(null, {
             status: 302,
-            headers: {
-              ...CORS_HEADERS,
-              Location: githubAuthUrl,
-              "Set-Cookie": createOAuthStateCookie(state),
-            },
+            headers: responseHeaders,
           });
         }
 
@@ -488,15 +495,7 @@ export function createServer(options: ServerOptions) {
           const clientSecret = process.env.GITHUB_CLIENT_SECRET;
           // Deterministic public origin when APP_URL is set (e.g. https://app.yourdomain.com);
           // falls back to proxy headers / request origin for local development
-          const forwardedHost = req.headers.get("x-forwarded-host");
-          const forwardedProto = req.headers.get("x-forwarded-proto") || "http";
-          const clientOrigin =
-            process.env.APP_URL?.replace(/\/+$/, "") ||
-            (forwardedHost
-              ? `${forwardedProto}://${forwardedHost}`
-              : url.port === "3001"
-                ? "http://localhost:3000"
-                : url.origin);
+          const clientOrigin = resolveClientOrigin(req, url);
 
           if (!code || !clientId || !clientSecret) {
             return Response.redirect(`${clientOrigin}/login?error=missing_oauth_code`, 302);
@@ -504,15 +503,15 @@ export function createServer(options: ServerOptions) {
 
           // Reject the exchange unless the state round-trips through GitHub and
           // matches the initiation cookie — prevents login CSRF
-          const oauthState = url.searchParams.get("state");
-          const cookieState = parseCookies(req.headers.get("cookie")).cw_oauth_state;
+          const oauthState = url.searchParams.get("state")?.trim();
+          const cookieState = parseCookies(req.headers.get("cookie")).cw_oauth_state?.trim();
           if (!oauthState || !cookieState || oauthState !== cookieState) {
+            const responseHeaders = new Headers(CORS_HEADERS);
+            responseHeaders.set("Location", `${clientOrigin}/login?error=oauth_state_mismatch`);
+            responseHeaders.append("Set-Cookie", createClearOAuthStateCookie());
             return new Response(null, {
               status: 302,
-              headers: {
-                Location: `${clientOrigin}/login?error=oauth_state_mismatch`,
-                "Set-Cookie": createClearOAuthStateCookie(),
-              },
+              headers: responseHeaders,
             });
           }
 
@@ -594,13 +593,13 @@ export function createServer(options: ServerOptions) {
             });
 
             const targetPath = "/";
+            const responseHeaders = new Headers(CORS_HEADERS);
+            responseHeaders.set("Location", `${clientOrigin}${targetPath}`);
+            responseHeaders.append("Set-Cookie", createSessionCookie(sessionToken));
+            responseHeaders.append("Set-Cookie", createClearOAuthStateCookie());
             return new Response(null, {
               status: 302,
-              headers: {
-                ...CORS_HEADERS,
-                Location: `${clientOrigin}${targetPath}`,
-                "Set-Cookie": [createSessionCookie(sessionToken), createClearOAuthStateCookie()],
-              },
+              headers: responseHeaders,
             });
           } catch (oauthErr) {
             console.error("[server] OAuth callback error:", oauthErr);

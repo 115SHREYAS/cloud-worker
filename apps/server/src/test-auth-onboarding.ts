@@ -275,4 +275,81 @@ describe("User Authentication & Onboarding Controls", () => {
       server.stop();
     }
   });
+
+  it("emits distinct Set-Cookie headers on successful OAuth callback", async () => {
+    const repo = new MemoryTaskRepository();
+    const eventBus = new MemoryEventBus();
+    const worker = new TaskWorker(repo, eventBus);
+    const queue = new DirectTaskQueue(worker);
+    const server = createServer({ port: 0, repo, eventBus, queue });
+    const baseUrl = `http://localhost:${server.port}`;
+
+    const prevClientId = process.env.GITHUB_CLIENT_ID;
+    const prevClientSecret = process.env.GITHUB_CLIENT_SECRET;
+    process.env.GITHUB_CLIENT_ID = "test-client-id";
+    process.env.GITHUB_CLIENT_SECRET = "test-client-secret";
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (urlStr.includes("github.com/login/oauth/access_token")) {
+        return new Response(JSON.stringify({ access_token: "gho_mock_token_123" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (urlStr.includes("api.github.com/user/emails")) {
+        return new Response(JSON.stringify([{ email: "test@example.com", primary: true, verified: true }]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (urlStr.includes("api.github.com/user")) {
+        return new Response(
+          JSON.stringify({ id: 12345, login: "testuser", avatar_url: "https://github.com/test.png" }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    try {
+      const state = "valid-test-state-123";
+      const callbackRes = await originalFetch(
+        `${baseUrl}/api/auth/callback/github?code=valid-code&state=${state}`,
+        {
+          redirect: "manual",
+          headers: {
+            cookie: `cw_oauth_state=${state}`,
+          },
+        },
+      );
+
+      expect(callbackRes.status).toBe(302);
+      expect(callbackRes.headers.get("location")).toBe(`${baseUrl}/`);
+
+      const setCookies = callbackRes.headers.getSetCookie?.() ?? [];
+      expect(setCookies.length).toBe(2);
+
+      const sessionCookie = setCookies.find((c) => c.startsWith("cw_session="));
+      const clearStateCookie = setCookies.find((c) => c.startsWith("cw_oauth_state="));
+
+      expect(sessionCookie).toBeDefined();
+      expect(sessionCookie).not.toContain("Max-Age=0");
+      expect(sessionCookie).toContain("HttpOnly");
+
+      expect(clearStateCookie).toBeDefined();
+      expect(clearStateCookie).toContain("Max-Age=0");
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (prevClientId === undefined) delete process.env.GITHUB_CLIENT_ID;
+      else process.env.GITHUB_CLIENT_ID = prevClientId;
+      if (prevClientSecret === undefined) delete process.env.GITHUB_CLIENT_SECRET;
+      else process.env.GITHUB_CLIENT_SECRET = prevClientSecret;
+      server.stop();
+    }
+  });
 });
