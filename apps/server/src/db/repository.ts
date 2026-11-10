@@ -2,7 +2,7 @@ import type { StreamEvent, Task, TaskStatus, CreateTaskInput, GitHubInstallation
 import type { AgentProvider } from "@cloud-worker/sandbox";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { eq, desc, asc, inArray, and, or } from "drizzle-orm";
+import { eq, desc, asc, inArray, and, or, isNull, sql } from "drizzle-orm";
 import {
   users,
   tasks,
@@ -39,6 +39,7 @@ export interface TaskRepository {
   listInstallations(): Promise<GitHubInstallation[]>;
   deleteInstallation(installationId: number): Promise<void>;
   linkUserInstallation(userId: string, installationId: number): Promise<void>;
+  claimLegacyTasks(userId: string, username: string): Promise<number>;
   listUserInstallations(userId: string): Promise<GitHubInstallation[]>;
   getUser(id: string): Promise<User | null>;
   getUserByGitHubId(githubId: number): Promise<User | null>;
@@ -406,6 +407,15 @@ export class DrizzleTaskRepository implements TaskRepository {
       .onConflictDoNothing();
   }
 
+  async claimLegacyTasks(userId: string, username: string): Promise<number> {
+    const rows = await this.db
+      .update(tasks)
+      .set({ userId })
+      .where(and(eq(sql`lower(${tasks.repoOwner})`, username.toLowerCase()), isNull(tasks.userId)))
+      .returning();
+    return rows.length;
+  }
+
   async listUserInstallations(userId: string): Promise<GitHubInstallation[]> {
     const rows = await this.db
       .select({
@@ -700,6 +710,17 @@ export class MemoryTaskRepository implements TaskRepository {
       this.userInstallations.set(userId, set);
     }
     set.add(installationId);
+  }
+
+  async claimLegacyTasks(userId: string, username: string): Promise<number> {
+    let count = 0;
+    for (const task of this.tasks.values()) {
+      if (!task.userId && task.repo.owner.toLowerCase() === username.toLowerCase()) {
+        task.userId = userId;
+        count++;
+      }
+    }
+    return count;
   }
 
   async listUserInstallations(userId: string): Promise<GitHubInstallation[]> {
